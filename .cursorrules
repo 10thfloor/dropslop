@@ -1,0 +1,65 @@
+# Project Rules
+
+## NATS JavaScript Client (v3 Modular Architecture)
+
+This project uses the **NATS v3 modular client** from https://github.com/nats-io/nats.js
+
+### Package Structure
+- **@nats-io/transport-node** - TCP transport for Node.js/Bun (exports `connect`)
+- **@nats-io/nats-core** - Core types (NatsConnection, Subscription, etc.)
+- **@nats-io/jetstream** - JetStream persistence (streams, consumers)
+- **@nats-io/kv** - Key-Value store
+- **@nats-io/obj** - Object store
+- **@nats-io/services** - Service framework
+
+### Import Patterns
+```typescript
+// Connection (Node.js)
+import { connect } from "@nats-io/transport-node";
+
+// Types only
+import type { NatsConnection, Subscription } from "@nats-io/nats-core";
+
+// JetStream (if needed)
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+```
+
+### Encoding/Decoding
+**Do NOT use `StringCodec`** - it was removed in v3.
+
+Use native TextEncoder/TextDecoder:
+```typescript
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+// Publish
+nc.publish(topic, textEncoder.encode(JSON.stringify(data)));
+
+// Decode
+const decoded = JSON.parse(textDecoder.decode(msg.data));
+
+// Or use message helpers
+const str = msg.string();
+const obj = msg.json<MyType>();
+```
+
+### Documentation
+- Core: https://github.com/nats-io/nats.js/blob/main/core/README.md
+- Transport: https://github.com/nats-io/nats.js/blob/main/transport-node/README.md
+- JetStream: https://github.com/nats-io/nats.js/blob/main/jetstream/README.md
+- KV: https://github.com/nats-io/nats.js/blob/main/kv/README.md
+- Services: https://github.com/nats-io/nats.js/blob/main/services/README.md
+
+## Tech Stack
+
+- **Runtime**: Node.js with TypeScript (ESM)
+- **Backend Framework**: Hono
+- **Durable Execution**: Restate SDK
+- **Message Broker**: NATS (v3)
+- **Frontend**: Next.js with Tailwind CSS
+- **Package Manager**: pnpm
+
+## Cadence (Flow Blockchain)
+
+When writing Flow smart contracts, always use **Cadence 1.0** syntax.
+

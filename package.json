@@ -1,0 +1,39 @@
+{
+  "name": "product-drop-backend",
+  "version": "1.0.0",
+  "description": "High-reliability product drop backend with Restate and bot mitigation",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit",
+    "init-drop": "tsx src/scripts/init-drop.ts",
+    "restate:up": "docker-compose up -d",
+    "restate:down": "docker-compose down",
+    "restate:register": "curl -s localhost:9070/deployments -H 'content-type: application/json' -d '{\"uri\":\"http://host.docker.internal:8081\"}'"
+  },
+  "keywords": [
+    "restate",
+    "product-drop",
+    "bot-mitigation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^1.8.0",
+    "@nats-io/nats-core": "^3.0.0",
+    "@nats-io/transport-node": "^3.0.0",
+    "@restatedev/restate-sdk": "^1.9.1",
+    "hono": "^4.0.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^20.10.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

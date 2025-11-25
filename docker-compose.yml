@@ -1,0 +1,29 @@
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+
+  restate:
+    image: restatedev/restate:latest
+    ports:
+      - "8080:8080"
+      - "9070:9070"
+    environment:
+      - RESTATE_LOG_LEVEL=info
+      - RESTATE_META__HTTP_ADDRESS=0.0.0.0:8080
+      - RESTATE_META__ADMIN_ADDRESS=0.0.0.0:9070
+    volumes:
+      - restate-data:/tmp/restate
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - nats
+
+volumes:
+  restate-data:

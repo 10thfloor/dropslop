@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+*.local
+
+# Playwright test artifacts
+tests/load/results/
+test-results/
+playwright-report/
+
+# k6 test artifacts
+k6-results/
+load/results/
+
+# Legacy test output (in case old files exist)
+load-test-*.png
+load-test-results.jsonl
+
+.pnpm-store/
