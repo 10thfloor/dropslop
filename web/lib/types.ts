@@ -1,32 +1,32 @@
-export type Phase = "registration" | "lottery" | "purchase" | "completed";
-
-export type UserStatus =
-  | "not_registered"
-  | "registered"
-  | "winner"
-  | "loser"
-  | "purchased";
-
-export interface TicketPricing {
-  priceUnit: number;
-  maxTickets: number;
-  costs: number[]; // costs[n] = total cost for n tickets
-}
+// Re-export shared types
+export type {
+  Phase,
+  UserStatus,
+  LoyaltyTier,
+  TicketPricing,
+  BotValidation,
+  SSEEvent,
+} from "../../shared/types";
 
 export interface DropState {
   phase: Phase;
   inventory: number;
+  initialInventory: number; // Initial inventory (for display purposes)
   participantCount: number;
   totalTickets: number;
+  totalEffectiveTickets?: number; // Total tickets with multipliers applied
   winnerCount: number;
+  backupWinnerCount?: number;
   registrationEnd: number; // Server-authoritative timestamp
   purchaseEnd?: number; // Server-authoritative timestamp for purchase window
-  ticketPricing?: TicketPricing;
+  ticketPricing: TicketPricing;
+  lotteryCommitment?: string; // For verifiable lottery
 }
 
 export interface UserState {
   status: UserStatus;
   tickets?: number;
+  effectiveTickets?: number; // Tickets after loyalty multiplier
   position?: number;
   queuePosition?: number;
   purchaseToken?: string;
@@ -34,60 +34,52 @@ export interface UserState {
   // Rollover info
   rolloverUsed?: number; // How many rollover entries were used this drop
   rolloverBalance?: number; // Global rollover balance remaining
+  // Backup winner info
+  backupPosition?: number; // Position in backup queue
+  promoted?: boolean; // True when promoted from backup to winner
+  // Loyalty info
+  loyaltyTier?: LoyaltyTier;
+  loyaltyMultiplier?: number;
 }
 
-export interface SSEDropEvent {
-  type: "drop";
-  phase: Phase;
-  participantCount: number;
-  totalTickets: number;
-  inventory: number;
-  registrationEnd: number;
-  purchaseEnd?: number;
-  serverTime: number;
-}
-
-export interface SSEUserEvent {
-  type: "user";
-  status: UserStatus;
-  tickets?: number;
-  position?: number;
-  token?: string;
-  // Rollover fields
-  rolloverUsed?: number;
-  rolloverBalance?: number;
-}
-
-export interface SSEConnectedEvent {
-  type: "connected";
-  dropId: string;
-  phase: Phase;
-  totalTickets?: number;
-  registrationEnd?: number;
-  purchaseEnd?: number;
-  serverTime?: number;
-}
-
-export type SSEEvent = SSEDropEvent | SSEUserEvent | SSEConnectedEvent;
-
-export interface BotValidation {
-  fingerprint: string;
-  fingerprintConfidence: number;
-  timingMs: number;
-  powSolution: string;
-  powChallenge: string;
-}
+// SSEEvent and BotValidation are imported from shared/types.ts
+// Frontend-specific discriminated union types can be created from SSEEvent if needed
 
 export interface RegisterResult {
   success: boolean;
   participantCount: number;
   totalTickets: number;
   userTickets: number;
+  effectiveTickets: number;
   position: number;
   rolloverUsed: number;
   paidEntries: number;
+  loyaltyTier: string;
+  loyaltyMultiplier: number;
 }
 
 export interface RolloverBalance {
   balance: number;
+}
+
+export interface LoyaltyStats {
+  multiplier: number;
+  tier: LoyaltyTier;
+  streak: number;
+  dropsParticipated: number;
+}
+
+export interface LotteryProof {
+  available: boolean;
+  commitment?: string;
+  proof?: {
+    commitment: string;
+    secret: string;
+    participantSnapshot: string;
+    seed: string;
+    algorithm: string;
+    timestamp: number;
+    winners: string[];
+    backupWinners: string[];
+  };
 }

@@ -20,8 +20,10 @@ interface PhaseDisplayProps {
     | "not_registered"
     | "registered"
     | "winner"
+    | "backup_winner"
     | "loser"
-    | "purchased";
+    | "purchased"
+    | "expired";
 }
 
 type PhaseVariant = "accent" | "emerald" | "amber" | "muted";

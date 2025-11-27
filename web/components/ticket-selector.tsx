@@ -92,7 +92,7 @@ export function TicketSelector({
                     </span>
                   </h4>
                   <p className="text-xs text-foreground-secondary mt-1 leading-relaxed">
-                    Didn't win? Your{" "}
+                    Didn&apos;t win? Your{" "}
                     <span className="text-amber-400 font-medium">
                       paid entries
                     </span>{" "}
@@ -114,7 +114,7 @@ export function TicketSelector({
             {/* Expandable Details Toggle */}
             <button
               type="button"
-              onClick={() => setRolloverExpanded(!rolloverExpanded)}
+              onClick={() => setRolloverExpanded((prev) => !prev)}
               className="w-full px-4 py-2.5 flex items-center justify-between border-t border-amber-500/10 hover:bg-amber-500/5 transition-colors"
             >
               <span className="text-xs text-foreground-secondary">
@@ -128,6 +128,7 @@ export function TicketSelector({
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -170,6 +171,7 @@ export function TicketSelector({
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
+                      aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
@@ -197,6 +199,7 @@ export function TicketSelector({
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
+                      aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
@@ -226,6 +229,7 @@ export function TicketSelector({
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
+                      aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
@@ -247,6 +251,7 @@ export function TicketSelector({
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
+                      aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
@@ -268,6 +273,7 @@ export function TicketSelector({
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
+                      aria-hidden="true"
                     >
                       <path
                         strokeLinecap="round"
@@ -288,8 +294,8 @@ export function TicketSelector({
                 {/* CTA */}
                 <div className="pt-2 text-center">
                   <p className="text-xs text-amber-400/80 italic">
-                    "The more you participate, the better your odds become over
-                    time"
+                    &quot;The more you participate, the better your odds become
+                    over time&quot;
                   </p>
                 </div>
               </div>
@@ -346,8 +352,9 @@ export function TicketSelector({
                 ? "border-border text-foreground-muted cursor-not-allowed"
                 : "border-accent/50 text-accent hover:bg-accent/10 hover:border-accent active:scale-95"
             )}
+            aria-label="Decrease number of tickets"
           >
-            −
+            &minus;
           </button>
 
           <div className="text-center min-w-[120px]">
@@ -371,6 +378,7 @@ export function TicketSelector({
                 ? "border-border text-foreground-muted cursor-not-allowed"
                 : "border-accent/50 text-accent hover:bg-accent/10 hover:border-accent active:scale-95"
             )}
+            aria-label="Increase number of tickets"
           >
             +
           </button>
@@ -396,6 +404,8 @@ export function TicketSelector({
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
+                aria-label="Free entry icon"
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -416,6 +426,7 @@ export function TicketSelector({
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -428,7 +439,7 @@ export function TicketSelector({
                 {paidEntries} paid
               </span>
               <span className="text-[10px] text-amber-400/70">
-                → rollover if you are not selected
+                &rarr; rollover if you are not selected
               </span>
             </div>
           )}
@@ -450,7 +461,7 @@ export function TicketSelector({
             </span>
             {paidEntries > 0 && (
               <p className="text-[10px] text-amber-400 mt-0.5">
-                ↻ Converts to {paidEntries}{" "}
+                &#8635; Converts to {paidEntries}{" "}
                 {paidEntries === 1 ? "entry" : "entries"} if not selected
               </p>
             )}
@@ -475,10 +486,11 @@ export function TicketSelector({
               "bg-gradient-to-r from-accent to-accent-hover"
             )}
             style={{ width: `${Math.min(probabilityPercent, 100)}%` }}
+            aria-hidden="true"
           />
         </div>
         <p className="text-[10px] text-foreground-muted text-center mt-2">
-          Based on {totalTicketsInPool} tickets in pool • {inventory} items
+          Based on {totalTicketsInPool} tickets in pool &bull; {inventory} items
           available
         </p>
       </div>
@@ -493,15 +505,17 @@ export function TicketSelector({
             const ticketNum = i + 1;
             const ticketInfo = getCostForTickets(ticketNum);
             const isSelected = ticketNum === tickets;
-            const isRollover = ticketNum <= rolloverBalance;
+            const isRollover = ticketNum <= (rolloverBalance ?? 0);
             const isFreeEntry =
-              !isRollover && ticketNum === rolloverBalance + 1;
+              !isRollover && ticketNum === (rolloverBalance ?? 0) + 1;
 
             return (
               <button
                 type="button"
                 key={ticketNum}
-                onClick={() => !disabled && setTickets(ticketNum)}
+                onClick={() => {
+                  if (!disabled) setTickets(ticketNum);
+                }}
                 disabled={disabled}
                 className={clsx(
                   "py-2.5 rounded-xl text-center transition-all duration-150",
@@ -514,6 +528,9 @@ export function TicketSelector({
                     ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:border-emerald-500/50"
                     : "border-border text-foreground-muted hover:border-foreground-muted hover:text-foreground-secondary"
                 )}
+                aria-label={`Select ${ticketNum} ticket${
+                  ticketNum > 1 ? "s" : ""
+                }`}
               >
                 <div className="text-sm font-bold">{ticketNum}</div>
                 <div className="text-[9px] font-mono leading-tight mt-0.5">

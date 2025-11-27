@@ -1,9 +1,17 @@
-import type { BotValidationRequest, BotValidationResult } from './types.js';
+/**
+ * FingerprintJS Pro integration and bot validation
+ * Uses shared config for settings
+ */
 
-const API_KEY = process.env.FINGERPRINT_API_KEY;
+import type { BotValidationRequest, BotValidationResult } from "./types.js";
+import { config } from "./config.js";
+import { createLogger } from "./logger.js";
 
-if (!API_KEY) {
-  console.warn('FINGERPRINT_API_KEY not set - bot validation will be limited');
+const logger = createLogger("fingerprint");
+
+// Log warning at startup if API key is missing
+if (!config.fingerprint.apiKey) {
+  logger.warn("FINGERPRINT_API_KEY not set - bot validation will be limited");
 }
 
 /**
@@ -14,12 +22,12 @@ export async function validateFingerprint(
   visitorId: string,
   confidence: number
 ): Promise<{ valid: boolean; confidence: number }> {
-  if (!API_KEY) {
+  if (!config.fingerprint.apiKey) {
     // Fallback: basic validation without API
     // Accept any visitorId that looks valid (at least 4 chars for our simple hash)
-    const isValidFormat = visitorId && visitorId.length >= 4;
+    const isValidFormat = Boolean(visitorId && visitorId.length >= 4);
     return {
-      valid: isValidFormat && confidence >= 50,
+      valid: isValidFormat && confidence >= config.fingerprint.minTrustScore,
       confidence,
     };
   }
@@ -27,7 +35,7 @@ export async function validateFingerprint(
   try {
     // In production, verify with FingerprintJS Pro Server API:
     // const response = await fetch(`https://api.fpjs.io/visitors/${visitorId}`, {
-    //   headers: { 'Auth-API-Key': API_KEY }
+    //   headers: { 'Auth-API-Key': config.fingerprint.apiKey }
     // });
     // const data = await response.json();
     // return { valid: data.visits?.length > 0, confidence: data.confidence?.score || 0 };
@@ -36,11 +44,11 @@ export async function validateFingerprint(
     const normalizedConfidence = Math.max(0, Math.min(100, confidence));
 
     return {
-      valid: normalizedConfidence >= 50,
+      valid: normalizedConfidence >= config.fingerprint.minTrustScore,
       confidence: normalizedConfidence,
     };
   } catch (error) {
-    console.error('Fingerprint validation error:', error);
+    logger.error({ err: error }, "Fingerprint validation error");
     return {
       valid: false,
       confidence: 0,
@@ -96,30 +104,19 @@ export async function calculateTrustScore(
     timingScore * 0.3 +
     powScore * 0.3;
 
-  const allowed = trustScore >= 50 && fingerprintResult.valid && powVerified;
-
-  // Debug logging
-  console.log('Trust score calculation:', {
-    fingerprint: request.fingerprint,
-    fingerprintLen: request.fingerprint?.length,
-    fingerprintConfidence: request.fingerprintConfidence,
-    fingerprintValid: fingerprintResult.valid,
-    timingMs: request.timingMs,
-    timingScore,
-    powVerified,
-    powScore,
-    totalScore: trustScore,
-    allowed,
-  });
+  const allowed =
+    trustScore >= config.fingerprint.minTrustScore &&
+    fingerprintResult.valid &&
+    powVerified;
 
   let reason: string | undefined;
   if (!allowed) {
     if (!fingerprintResult.valid) {
-      reason = `Invalid fingerprint (len=${request.fingerprint?.length})`;
+      reason = "Invalid fingerprint";
     } else if (!powVerified) {
-      reason = 'PoW not verified';
+      reason = "PoW not verified";
     } else {
-      reason = `Trust score ${Math.round(trustScore)} below threshold`;
+      reason = "Trust score below threshold";
     }
   }
 

@@ -56,6 +56,8 @@ export function initializeDrop(dropId, config = {}) {
     registrationStart: config.registrationStart || now - 1000,
     registrationEnd: config.registrationEnd || now + 5 * 60 * 1000, // 5 minutes
     purchaseWindow: config.purchaseWindow || 300,
+    ticketPriceUnit: config.ticketPriceUnit || 1.0,
+    maxTicketsPerUser: config.maxTicketsPerUser || 10,
   };
 
   return callRestate("Drop", dropId, "initialize", defaults, {

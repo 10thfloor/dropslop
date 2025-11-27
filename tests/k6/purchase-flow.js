@@ -102,6 +102,9 @@ export function setup() {
       inventory: WINNERS, // Enough for everyone
       registrationStart: now - 1000,
       registrationEnd: now + 5 * 60 * 1000,
+      purchaseWindow: 600,
+      ticketPriceUnit: 1.0,
+      maxTicketsPerUser: 10,
       purchaseWindow: 300,
     }),
     { headers: JSON_HEADERS, timeout: "30s" }
@@ -228,6 +231,11 @@ export function startPurchase(data) {
     try {
       const result = JSON.parse(startRes.body);
       if (result.purchaseToken) {
+        // Verify new token format: shortId.expiry.signature (3 parts)
+        const tokenParts = result.purchaseToken.split(".");
+        if (tokenParts.length !== 3) {
+          console.log(`⚠️ Invalid token format for ${userId}: expected 3 parts, got ${tokenParts.length}`);
+        }
         purchaseTokens[userId] = result.purchaseToken;
       }
     } catch (e) {

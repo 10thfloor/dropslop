@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+web/node_modules
+
+# Build outputs
+dist
+.next
+web/.next
+out
+web/out
+
+# Development
+*.log
+.env*
+!.env.example
+
+# Testing
+tests
+coverage
+playwright-report
+test-results
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Fly build artifacts (avoid recursive copy)
+fly/*/dist
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+Dockerfile*
+docker-compose*
+.docker*
+

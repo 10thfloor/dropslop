@@ -1,11 +1,22 @@
 import * as restate from "@restatedev/restate-sdk";
 import type { UserRolloverState } from "../lib/types.js";
+import { createLogger } from "../lib/logger.js";
+import { config } from "../lib/config.js";
+
+const logger = createLogger("user-rollover");
 
 // State keys
 const STATE_KEY = "state";
 
-// Maximum rollover entries a user can accumulate
-export const MAX_ROLLOVER_ENTRIES = 10;
+// Use config for max rollover entries
+const MAX_ROLLOVER_ENTRIES = config.rollover.maxEntries;
+
+/**
+ * Helper to get current time deterministically in Restate context
+ */
+async function getCurrentTime(ctx: restate.ObjectContext): Promise<number> {
+  return ctx.run("get_time", () => Date.now());
+}
 
 /**
  * UserRollover virtual object - tracks global rollover balance per user
@@ -41,9 +52,10 @@ export const userRolloverObject = restate.object({
       const remaining = currentBalance - consumed;
 
       if (consumed > 0) {
+        const now = await getCurrentTime(ctx);
         await ctx.set(STATE_KEY, {
           balance: remaining,
-          lastUpdated: Date.now(),
+          lastUpdated: now,
         });
       }
 
@@ -66,19 +78,27 @@ export const userRolloverObject = restate.object({
 
       const state = await ctx.get<UserRolloverState>(STATE_KEY);
       const currentBalance = state?.balance || 0;
-      
+
       // Cap at max rollover entries
       const uncappedBalance = currentBalance + input.amount;
       const newBalance = Math.min(uncappedBalance, MAX_ROLLOVER_ENTRIES);
       const capped = uncappedBalance > MAX_ROLLOVER_ENTRIES;
 
+      const now = await getCurrentTime(ctx);
       await ctx.set(STATE_KEY, {
         balance: newBalance,
-        lastUpdated: Date.now(),
+        lastUpdated: now,
       });
 
-      console.log(
-        `[UserRollover ${ctx.key}] Added ${input.amount} rollover entries. New balance: ${newBalance}${capped ? ` (capped from ${uncappedBalance})` : ""}`
+      logger.info(
+        {
+          userId: ctx.key,
+          amount: input.amount,
+          newBalance,
+          capped,
+          uncappedBalance: capped ? uncappedBalance : undefined,
+        },
+        "Added rollover entries"
       );
 
       return { newBalance, capped };
@@ -91,9 +111,10 @@ export const userRolloverObject = restate.object({
       ctx: restate.ObjectContext,
       input: { balance: number }
     ): Promise<{ balance: number }> => {
+      const now = await getCurrentTime(ctx);
       await ctx.set(STATE_KEY, {
         balance: Math.max(0, input.balance),
-        lastUpdated: Date.now(),
+        lastUpdated: now,
       });
 
       return { balance: input.balance };

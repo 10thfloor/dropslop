@@ -1,0 +1,40 @@
+# SSE Server for Product Drop
+# Public-facing Server-Sent Events for real-time updates
+
+app = "drop-sse"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  # NATS_URL and RESTATE_INGRESS_URL are set via secrets by deploy.sh
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # SSE connections are long-lived, allow more concurrent connections
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+[checks]
+  [checks.health]
+    grace_period = "15s"
+    interval = "60s"
+    method = "GET"
+    path = "/health"
+    port = 8080
+    timeout = "10s"
+    type = "http"
+
+[vm]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

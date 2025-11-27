@@ -119,6 +119,8 @@ export function setup() {
         registrationStart: now - 1000,
         registrationEnd: now + 10 * 60 * 1000,
         purchaseWindow: 300,
+        ticketPriceUnit: 1.0,
+        maxTicketsPerUser: 10,
       }),
       { headers: JSON_HEADERS, timeout: "30s" }
     );

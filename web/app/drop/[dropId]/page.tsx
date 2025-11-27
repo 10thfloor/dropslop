@@ -11,6 +11,7 @@ import { ActionStatus, type ActionStep } from "@/components/action-status";
 import { TicketSelector } from "@/components/ticket-selector";
 import { RolloverCelebration } from "@/components/rollover-celebration";
 import { PurchaseCelebration } from "@/components/purchase-celebration";
+import { LotteryProofDisplay } from "@/components/lottery-proof";
 import { useSSE } from "@/hooks/use-sse";
 import { useCountdown } from "@/hooks/use-countdown";
 import { useUserId } from "@/hooks/use-user-id";
@@ -24,7 +25,6 @@ import {
 import { solvePow, generateFingerprint } from "@/lib/pow-solver";
 
 const PRODUCT_NAME = "ALPHA SV JACKET";
-const MAX_INVENTORY = 10;
 
 export default function DropPage() {
   // Get dropId from URL params
@@ -40,6 +40,13 @@ export default function DropPage() {
     userId,
     enabled: !!userId && !!dropId,
   });
+
+  // Get ticket pricing from server state (with defaults)
+  const ticketPricing = dropState.ticketPricing || {
+    priceUnit: 1,
+    maxTickets: 10,
+    costs: [0, 0, 1, 5, 14, 30, 55, 91, 140, 204, 285],
+  };
 
   // Countdowns use server-authoritative timestamps, corrected for clock drift
   const countdown = useCountdown(dropState.registrationEnd, clockOffset);
@@ -74,12 +81,12 @@ export default function DropPage() {
     ? Math.max(0, (userState.tickets || 0) - (userState.rolloverUsed || 0) - 1)
     : 0;
 
-  // Calculate cost with rollover applied
+  // Calculate cost with rollover applied using server-provided priceUnit
   const { cost: ticketCost, rolloverUsed: rolloverToUse } =
     calculateCostWithRollover(
       selectedTickets,
       rolloverBalance,
-      1 // priceUnit
+      ticketPricing.priceUnit
     );
 
   // Derived state
@@ -127,8 +134,10 @@ export default function DropPage() {
       const fingerprint = generateFingerprint();
 
       setActionStep("registering");
-      const pageLoadTime = (window as unknown as { pageLoadTime?: number })
-        .pageLoadTime;
+      const pageLoadTime =
+        typeof window !== "undefined" && "pageLoadTime" in window
+          ? (window as { pageLoadTime?: number }).pageLoadTime
+          : undefined;
       const timingMs = pageLoadTime ? Date.now() - pageLoadTime : 5000;
       const result = await registerForDrop(
         dropId,
@@ -290,9 +299,15 @@ export default function DropPage() {
         };
       case "winner":
         return {
-          text: "COMPLETE PURCHASE",
+          text: userState.promoted ? "YOU'VE BEEN PROMOTED! PURCHASE NOW" : "COMPLETE PURCHASE",
           disabled: false,
           action: handlePurchase,
+        };
+      case "backup_winner":
+        return {
+          text: `ON WAITLIST (#${userState.backupPosition || "?"})`,
+          disabled: true,
+          action: () => {},
         };
       case "loser": {
         // Positive messaging about rollover
@@ -309,6 +324,12 @@ export default function DropPage() {
       case "purchased":
         return {
           text: "PURCHASED ✓",
+          disabled: true,
+          action: () => {},
+        };
+      case "expired":
+        return {
+          text: "PURCHASE WINDOW EXPIRED",
           disabled: true,
           action: () => {},
         };
@@ -370,6 +391,13 @@ export default function DropPage() {
               DROP: {dropId}
             </p>
 
+            {/* Lottery Provability */}
+            <LotteryProofDisplay
+              phase={dropState.phase}
+              commitment={dropState.lotteryCommitment}
+              dropId={dropId}
+            />
+
             {/* Phase Display */}
             <PhaseDisplay
               phase={dropState.phase}
@@ -380,13 +408,19 @@ export default function DropPage() {
             />
           </section>
 
-          {/* Stats Grid */}
+          {/* Stats Grid - use server inventory or fallback */}
           <StatsGrid
             phase={dropState.phase}
             entries={dropState.participantCount}
             totalTickets={dropState.totalTickets}
+            totalEffectiveTickets={dropState.totalEffectiveTickets}
             inventory={dropState.inventory}
-            maxInventory={MAX_INVENTORY}
+            maxInventory={dropState.initialInventory || dropState.inventory || 10}
+            // User-specific for odds calculation
+            userTickets={userState.tickets}
+            userEffectiveTickets={userState.effectiveTickets}
+            loyaltyTier={userState.loyaltyTier}
+            loyaltyMultiplier={userState.loyaltyMultiplier}
           />
 
           {/* Status Panel - Enhanced with rollover info */}
@@ -410,17 +444,19 @@ export default function DropPage() {
               dropState.phase === "purchase"
             }
             dropCompleted={dropState.phase === "completed"}
+            backupPosition={userState.backupPosition}
+            promoted={userState.promoted}
           />
 
-          {/* Ticket Selector - only show during open registration */}
+          {/* Ticket Selector - use server-provided pricing */}
           {showTicketSelector && (
             <TicketSelector
               tickets={selectedTickets}
               setTickets={setSelectedTickets}
-              maxTickets={10}
-              priceUnit={1}
+              maxTickets={ticketPricing.maxTickets}
+              priceUnit={ticketPricing.priceUnit}
               totalTicketsInPool={dropState.totalTickets}
-              inventory={dropState.inventory || MAX_INVENTORY}
+              inventory={dropState.inventory || ticketPricing.maxTickets}
               rolloverBalance={rolloverBalance}
               disabled={loading}
             />

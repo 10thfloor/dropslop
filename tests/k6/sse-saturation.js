@@ -18,7 +18,8 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter, Trend, Rate, Gauge } from "k6/metrics";
-import { SSE_URL, DROP_ID } from "./lib/config.js";
+import { SSE_URL, generateDropId } from "./lib/config.js";
+import { initializeDrop } from "./lib/restate.js";
 
 // Configuration
 const MAX_CONNECTIONS = Number(__ENV.MAX_CONNECTIONS) || 500;
@@ -59,9 +60,10 @@ export const options = {
   },
 };
 
-export default function () {
+export default function (data) {
+  const dropId = data.dropId;
   const userId = `k6-sse-${__VU}-${__ITER}-${Date.now()}`;
-  const sseUrl = `${SSE_URL}/events/${DROP_ID}/${userId}`;
+  const sseUrl = `${SSE_URL}/events/${dropId}/${userId}`;
 
   currentVUs++;
   activeConnections.add(currentVUs);
@@ -126,13 +128,27 @@ export default function () {
 }
 
 export function setup() {
+  // Generate drop ID once in setup, shared by all VUs
+  const dropId = __ENV.DROP_ID || generateDropId("sse-test");
+
   console.log(`\n📡 SSE Saturation Test\n`);
   console.log(`   Target: ${MAX_CONNECTIONS} connections`);
   console.log(`   SSE URL: ${SSE_URL}`);
-  console.log(`   Drop ID: ${DROP_ID}\n`);
+  console.log(`   Drop ID: ${dropId}\n`);
+
+  // Initialize drop for SSE testing
+  const initResult = initializeDrop(dropId, {
+    inventory: 1000,
+    registrationEnd: Date.now() + 60 * 60 * 1000, // 1 hour
+    purchaseWindow: 300,
+  });
+
+  if (!initResult.ok) {
+    console.log(`⚠️ Drop init: ${initResult.status} - continuing anyway`);
+  }
 
   // Verify SSE server is reachable
-  const testRes = http.get(`${SSE_URL}/events/${DROP_ID}/test-user`, {
+  const testRes = http.get(`${SSE_URL}/events/${dropId}/test-user`, {
     timeout: "5s",
     headers: { Accept: "text/event-stream" },
   });
@@ -143,7 +159,7 @@ export function setup() {
     console.log(`✅ SSE server reachable\n`);
   }
 
-  return {};
+  return { dropId };
 }
 
 export function handleSummary(data) {

@@ -4,7 +4,9 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: ["-js", "-m", "8222"]
+    command: ["-js", "-m", "8222", "-sd", "/data"]
+    volumes:
+      - nats-data:/data
 
   restate:
     image: restatedev/restate:latest
@@ -27,3 +29,4 @@ services:
 
 volumes:
   restate-data:
+  nats-data:

@@ -24,11 +24,10 @@ export async function botGuard(c: Context, next: Next) {
     return c.json({ error: "Bot validation required" }, 400);
   }
 
-  // Verify PoW first - use the difficulty from the challenge (defaults to 4)
-  const powValid = verifyPow(
+  // Verify PoW first (now async with NATS KV)
+  const powValid = await verifyPow(
     botValidation.powChallenge,
     botValidation.powSolution
-    // difficulty comes from DEFAULT_DIFFICULTY in pow.ts
   );
 
   if (!powValid) {

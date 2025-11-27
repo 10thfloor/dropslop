@@ -1,8 +1,8 @@
 # Product Drop Backend - Makefile
 # ================================
 
-.PHONY: help install start stop backend frontend restate-up restate-down restate-restart \
-        register init-drop reset reset-full status logs lottery clean setup nats-up nats-logs _ensure-infra \
+.PHONY: help install start stop backend backend-test frontend restate-up restate-down restate-restart \
+        register init-drop reset reset-full status logs lottery lottery-proof promote-backup clean setup nats-up nats-logs _ensure-infra \
         test-browser k6-spike k6-soak k6-lottery k6-bot k6-breakpoint k6-purchase k6-rollover k6-multi k6-sse test-all
 
 # Colors for output
@@ -18,6 +18,7 @@ RESET := \033[0m
 DROP_ID ?= demo-drop-$(shell date +%s)
 INVENTORY ?= 10
 REGISTRATION_MINUTES ?= 5
+BACKUP_MULTIPLIER ?= 1.5
 
 # Default target
 help:
@@ -37,12 +38,15 @@ help:
 	@echo ""
 	@echo "$(BOLD)Run Services (foreground):$(RESET)"
 	@echo "  make backend        Start backend servers (API :3003, SSE :3004)"
+	@echo "  make backend-test   Start backend with rate limiting disabled"
 	@echo "  make frontend       Start Next.js frontend (:3005)"
 	@echo ""
 	@echo "$(BOLD)Restate Management:$(RESET)"
 	@echo "  make register       Register worker with Restate"
 	@echo "  make init-drop      Initialize a demo drop"
 	@echo "  make lottery        Trigger lottery manually"
+	@echo "  make lottery-proof  Show verifiable lottery proof"
+	@echo "  make promote-backup Manually promote next backup winner"
 	@echo "  make status         Show drop status"
 	@echo ""
 	@echo "$(BOLD)Reset:$(RESET)"
@@ -50,10 +54,13 @@ help:
 	@echo "  make reset-full     Full reset (clear all state)"
 	@echo ""
 	@echo "$(BOLD)Stress Testing:$(RESET)"
+	@echo "  $(YELLOW)Tip: Use 'make backend-test' to disable rate limiting$(RESET)"
+	@echo ""
 	@echo "  $(CYAN)Playwright (Browser E2E):$(RESET)"
 	@echo "  make test-browser USERS=50      Real browser E2E test"
 	@echo ""
 	@echo "  $(CYAN)k6 Load Tests (install: brew install k6):$(RESET)"
+	@echo "  $(YELLOW)Note: Tests auto-generate unique drop IDs$(RESET)"
 	@echo "  make k6-spike                   Flash crowd simulation"
 	@echo "  make k6-soak DURATION=30m       Long-running stability test"
 	@echo "  make k6-lottery PARTICIPANTS=5000  Lottery stress test"
@@ -71,7 +78,8 @@ help:
 	@echo "  make clean          Remove node_modules and build artifacts"
 	@echo ""
 	@echo "$(BOLD)Configuration:$(RESET)"
-	@echo "  DROP_ID=$(DROP_ID)  INVENTORY=$(INVENTORY)  REGISTRATION_MINUTES=$(REGISTRATION_MINUTES)"
+	@echo "  DROP_ID=$(DROP_ID)"
+	@echo "  INVENTORY=$(INVENTORY)  REGISTRATION_MINUTES=$(REGISTRATION_MINUTES)  BACKUP_MULTIPLIER=$(BACKUP_MULTIPLIER)"
 	@echo ""
 
 # =============================================================================
@@ -122,6 +130,19 @@ backend: _ensure-infra
 	@echo "$(YELLOW)Press Ctrl+C to stop$(RESET)"
 	@echo ""
 	pnpm dev
+
+# Backend with rate limiting disabled (for load testing)
+backend-test: _ensure-infra
+	@echo "$(CYAN)Starting backend servers (rate limiting disabled)...$(RESET)"
+	@echo "  API Server:  http://localhost:3003"
+	@echo "  SSE Server:  http://localhost:3004"
+	@echo "  Worker:      http://localhost:9080"
+	@echo "  NATS:        nats://localhost:4222"
+	@echo ""
+	@echo "$(RED)⚠ Rate limiting DISABLED for load testing$(RESET)"
+	@echo "$(YELLOW)Press Ctrl+C to stop$(RESET)"
+	@echo ""
+	SKIP_RATE_LIMIT=true pnpm dev
 
 frontend:
 	@echo "$(CYAN)Starting Next.js frontend...$(RESET)"
@@ -196,8 +217,8 @@ init-drop:
 	END=$$((NOW + $(REGISTRATION_MINUTES) * 60000)); \
 	curl -s localhost:8080/Drop/$(DROP_ID)/initialize \
 		-H 'content-type: application/json' \
-		-d "{\"dropId\":\"$(DROP_ID)\",\"inventory\":$(INVENTORY),\"registrationStart\":$$((NOW - 1000)),\"registrationEnd\":$$END,\"purchaseWindow\":300}" > /dev/null 2>&1 || true
-	@echo "$(GREEN)✓ Drop initialized: $(DROP_ID) ($(INVENTORY) items, $(REGISTRATION_MINUTES) min)$(RESET)"
+		-d "{\"dropId\":\"$(DROP_ID)\",\"inventory\":$(INVENTORY),\"registrationStart\":$$((NOW - 1000)),\"registrationEnd\":$$END,\"purchaseWindow\":300,\"ticketPriceUnit\":1.0,\"maxTicketsPerUser\":10,\"backupMultiplier\":$(BACKUP_MULTIPLIER)}" > /dev/null 2>&1 || true
+	@echo "$(GREEN)✓ Drop initialized: $(DROP_ID) ($(INVENTORY) items, $(REGISTRATION_MINUTES) min, $(BACKUP_MULTIPLIER)x backups)$(RESET)"
 
 lottery:
 	@echo "$(CYAN)Triggering lottery for $(DROP_ID)...$(RESET)"
@@ -206,6 +227,26 @@ lottery:
 		-d '{}'
 	@echo ""
 	@echo "$(GREEN)✓ Lottery triggered$(RESET)"
+
+lottery-proof:
+	@echo "$(CYAN)Lottery Proof: $(DROP_ID)$(RESET)"
+	@echo "────────────────────────"
+	@curl -s localhost:8080/Drop/$(DROP_ID)/getLotteryProof \
+		-H 'content-type: application/json' \
+		-d '{}' 2>/dev/null | python3 -m json.tool 2>/dev/null || \
+		curl -s localhost:8080/Drop/$(DROP_ID)/getLotteryProof \
+		-H 'content-type: application/json' \
+		-d '{}' 2>/dev/null || \
+		echo "$(RED)Error: Cannot connect to Restate. Is it running?$(RESET)"
+	@echo ""
+
+promote-backup:
+	@echo "$(CYAN)Promoting next backup winner for $(DROP_ID)...$(RESET)"
+	@curl -s localhost:8080/Drop/$(DROP_ID)/promoteBackup \
+		-H 'content-type: application/json' \
+		-d '{}'
+	@echo ""
+	@echo "$(GREEN)✓ Backup promotion triggered$(RESET)"
 
 status:
 	@echo "$(CYAN)Drop Status: $(DROP_ID)$(RESET)"
@@ -278,6 +319,7 @@ _check-k6:
 	@which k6 > /dev/null || (echo "$(RED)Error: k6 not installed. Run: brew install k6$(RESET)" && exit 1)
 
 # Flash crowd simulation (spike test)
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-spike: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  ⚡ k6 Spike Test (Flash Crowd)                            ║$(RESET)"
@@ -285,10 +327,11 @@ k6-spike: _check-k6
 	@echo "$(CYAN)║  Scenario: 0 → 50 → 200 → hold → 50 → 0                    ║$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env API_URL=http://localhost:3003 --env DROP_ID=$(DROP_ID) \
+	k6 run --env API_URL=http://localhost:3003 --env RESTATE_URL=http://localhost:8080 \
 		tests/k6/registration-spike.js
 
 # Long-running soak test
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-soak: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  🔄 k6 Soak Test (Sustained Load)                          ║$(RESET)"
@@ -296,11 +339,12 @@ k6-soak: _check-k6
 	@echo "$(CYAN)║  VUs: $(VUS)   Duration: $(DURATION)$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env API_URL=http://localhost:3003 --env DROP_ID=$(DROP_ID) \
+	k6 run --env API_URL=http://localhost:3003 --env RESTATE_URL=http://localhost:8080 \
 		--env VUS=$(VUS) --env DURATION=$(DURATION) \
 		tests/k6/sustained-load.js
 
 # Lottery stress test with many participants
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-lottery: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  🎰 k6 Lottery Stress Test                                 ║$(RESET)"
@@ -308,11 +352,12 @@ k6-lottery: _check-k6
 	@echo "$(CYAN)║  Target Participants: $(PARTICIPANTS)$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env API_URL=http://localhost:3003 --env DROP_ID=$(DROP_ID) \
-		--env PARTICIPANTS=$(PARTICIPANTS) --env RESTATE_URL=http://localhost:8080 \
+	k6 run --env API_URL=http://localhost:3003 --env RESTATE_URL=http://localhost:8080 \
+		--env PARTICIPANTS=$(PARTICIPANTS) \
 		tests/k6/lottery-stress.js
 
 # Bot detection and PoW stress test
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-bot: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  🤖 k6 Bot Detection Stress Test                           ║$(RESET)"
@@ -320,10 +365,11 @@ k6-bot: _check-k6
 	@echo "$(CYAN)║  Tests: Challenge flood, invalid solutions, replay attacks ║$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env API_URL=http://localhost:3003 --env DROP_ID=$(DROP_ID) \
+	k6 run --env API_URL=http://localhost:3003 --env RESTATE_URL=http://localhost:8080 \
 		tests/k6/bot-detection.js
 
 # Breakpoint test - find system limits
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-breakpoint: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  📈 k6 Breakpoint Test                                     ║$(RESET)"
@@ -331,8 +377,8 @@ k6-breakpoint: _check-k6
 	@echo "$(CYAN)║  Ramping: 10 → $(MAX_RATE) req/s                                    ║$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env API_URL=http://localhost:3003 --env DROP_ID=$(DROP_ID) \
-		--env MAX_RATE=$(MAX_RATE) --env RESTATE_URL=http://localhost:8080 \
+	k6 run --env API_URL=http://localhost:3003 --env RESTATE_URL=http://localhost:8080 \
+		--env MAX_RATE=$(MAX_RATE) \
 		tests/k6/breakpoint.js
 
 # Purchase flow test
@@ -372,6 +418,7 @@ k6-multi: _check-k6
 		tests/k6/multi-drop.js
 
 # SSE connection saturation test
+# Note: Test auto-generates unique drop ID and initializes its own drop
 k6-sse: _check-k6
 	@echo "$(CYAN)╔════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(CYAN)║  📡 k6 SSE Saturation Test                                 ║$(RESET)"
@@ -379,7 +426,7 @@ k6-sse: _check-k6
 	@echo "$(CYAN)║  Max Connections: $(CONNECTIONS)                                    ║$(RESET)"
 	@echo "$(CYAN)╚════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	k6 run --env SSE_URL=http://localhost:3004 --env DROP_ID=$(DROP_ID) \
+	k6 run --env SSE_URL=http://localhost:3004 --env RESTATE_URL=http://localhost:8080 \
 		--env MAX_CONNECTIONS=$(CONNECTIONS) \
 		tests/k6/sse-saturation.js
 
@@ -437,4 +484,5 @@ i: init-drop
 s: status
 l: logs
 b: backend
+bt: backend-test
 f: frontend

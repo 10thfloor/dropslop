@@ -1,38 +1,33 @@
+/**
+ * Proof-of-Work challenge generation and verification
+ * Uses shared config for settings
+ */
+
 import crypto from "node:crypto";
 import type { PowChallenge } from "./types.js";
+import { storeChallenge, getAndDeleteChallenge } from "./nats-kv.js";
+import { config } from "./config.js";
+import { createLogger } from "./logger.js";
 
-const DEFAULT_DIFFICULTY = Number.parseInt(
-  process.env.POW_DIFFICULTY || "4",
-  10
-); // 4 hex chars = "0000"
-
-// Store challenges with expiration (in production, use Redis)
-const challengeStore = new Map<string, PowChallenge>();
+const logger = createLogger("pow");
 
 /**
  * Generate a proof-of-work challenge
+ * Challenges are stored in NATS KV with auto-expiry
  */
-export function generateChallenge(): PowChallenge {
+export async function generateChallenge(): Promise<PowChallenge> {
   const timestamp = Date.now();
   const random = crypto.randomBytes(16).toString("hex");
   const challenge = `${timestamp}:${random}`;
 
   const powChallenge: PowChallenge = {
     challenge,
-    difficulty: DEFAULT_DIFFICULTY,
+    difficulty: config.pow.difficulty,
     timestamp,
   };
 
-  // Store challenge for validation
-  challengeStore.set(challenge, powChallenge);
-
-  // Cleanup old challenges (older than 5 minutes)
-  const expiry = Date.now() - 300000;
-  for (const [key, value] of challengeStore.entries()) {
-    if (value.timestamp < expiry) {
-      challengeStore.delete(key);
-    }
-  }
+  // Store challenge in NATS KV (auto-expires based on config)
+  await storeChallenge(powChallenge);
 
   return powChallenge;
 }
@@ -40,23 +35,22 @@ export function generateChallenge(): PowChallenge {
 /**
  * Verify a SHA-256 proof-of-work solution
  * Must match the client-side algorithm exactly
+ *
+ * Note: Challenge expiry is handled by KV TTL - if the challenge exists,
+ * it's still valid. We only need to verify the solution and ensure one-time use.
  */
-export function verifyPow(
+export async function verifyPow(
   challenge: string,
   solution: string,
-  difficulty: number = DEFAULT_DIFFICULTY
-): boolean {
+  difficulty: number = config.pow.difficulty
+): Promise<boolean> {
   try {
-    // Check if challenge exists and is valid
-    const storedChallenge = challengeStore.get(challenge);
-    if (!storedChallenge) {
-      console.error("Challenge not found or already used");
-      return false;
-    }
+    // Get and delete challenge from NATS KV (one-time use)
+    // If challenge doesn't exist, it either expired (TTL) or was already used
+    const storedChallenge = await getAndDeleteChallenge(challenge);
 
-    if (!isChallengeValid(storedChallenge)) {
-      console.error("Challenge expired");
-      challengeStore.delete(challenge);
+    if (!storedChallenge) {
+      logger.warn({ challenge }, "Challenge not found, expired, or already used");
       return false;
     }
 
@@ -68,26 +62,9 @@ export function verifyPow(
     const hash = crypto.createHash("sha256").update(data).digest("hex");
 
     const prefix = "0".repeat(difficulty);
-    const valid = hash.startsWith(prefix);
-
-    // Remove challenge after use (one-time use)
-    if (valid) {
-      challengeStore.delete(challenge);
-    }
-
-    return valid;
+    return hash.startsWith(prefix);
   } catch (error) {
-    console.error("PoW verification error:", error);
+    logger.error({ err: error }, "PoW verification error");
     return false;
   }
-}
-
-/**
- * Check if challenge is still valid (not expired)
- */
-export function isChallengeValid(
-  challenge: PowChallenge,
-  maxAge = 300000
-): boolean {
-  return Date.now() - challenge.timestamp < maxAge;
 }

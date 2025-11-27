@@ -14,11 +14,10 @@ import { check, sleep } from "k6";
 import { Counter, Trend } from "k6/metrics";
 import { SharedArray } from "k6/data";
 import { solvePow } from "./lib/pow-solver.js";
+import { API_URL, RESTATE_URL, JSON_HEADERS, generateDropId } from "./lib/config.js";
+import { initializeDrop } from "./lib/restate.js";
 
 // Configuration
-const API_URL = __ENV.API_URL || "http://localhost:3003";
-const RESTATE_URL = __ENV.RESTATE_URL || "http://localhost:8080";
-const DROP_ID = __ENV.DROP_ID || "demo-drop-1";
 const PARTICIPANTS = Number(__ENV.PARTICIPANTS) || 1000;
 
 // Custom metrics
@@ -42,7 +41,8 @@ export const options = {
   },
 };
 
-export default function () {
+export default function (data) {
+  const dropId = data.dropId;
   const userId = `k6-lottery-${__VU}-${__ITER}-${Date.now()}`;
 
   // 1. Get challenge
@@ -71,7 +71,7 @@ export default function () {
   const regStart = Date.now();
 
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets,
@@ -98,13 +98,38 @@ export default function () {
   }
 }
 
+// Initialize drop before registrations
+export function setup() {
+  // Generate drop ID once in setup, shared by all VUs
+  const dropId = __ENV.DROP_ID || generateDropId("lottery-stress");
+
+  console.log(`\n🎯 Lottery Stress Test: ${PARTICIPANTS} participants`);
+  console.log(`   Drop ID: ${dropId}\n`);
+
+  // Initialize drop with enough inventory for lottery testing
+  const result = initializeDrop(dropId, {
+    inventory: Math.ceil(PARTICIPANTS * 0.1), // 10% winners
+    registrationEnd: Date.now() + 30 * 60 * 1000, // 30 minutes
+    purchaseWindow: 300,
+  });
+
+  if (!result.ok) {
+    console.log(`⚠️ Drop init: ${result.status} - continuing anyway`);
+  } else {
+    console.log(`✅ Drop initialized`);
+  }
+
+  return { dropId };
+}
+
 // Trigger lottery after all registrations
 export function teardown(data) {
+  const dropId = data.dropId;
   console.log("\n📊 Triggering lottery...\n");
 
   const lotteryStart = Date.now();
   const lotteryRes = http.post(
-    `${RESTATE_URL}/Drop/${DROP_ID}/runLottery`,
+    `${RESTATE_URL}/Drop/${dropId}/runLottery`,
     "{}",
     {
       headers: { "Content-Type": "application/json" },

@@ -12,7 +12,10 @@
     "init-drop": "tsx src/scripts/init-drop.ts",
     "restate:up": "docker-compose up -d",
     "restate:down": "docker-compose down",
-    "restate:register": "curl -s localhost:9070/deployments -H 'content-type: application/json' -d '{\"uri\":\"http://host.docker.internal:8081\"}'"
+    "restate:register": "curl -s localhost:9070/deployments -H 'content-type: application/json' -d '{\"uri\":\"http://host.docker.internal:8081\"}'",
+    "fly:deploy": "./fly/deploy.sh",
+    "fly:logs": "flyctl logs -a",
+    "fly:init-drop": "./fly/scripts/init-drop.sh"
   },
   "keywords": [
     "restate",
@@ -23,6 +26,7 @@
   "license": "MIT",
   "dependencies": {
     "@hono/node-server": "^1.8.0",
+    "@nats-io/kv": "^3.0.0",
     "@nats-io/nats-core": "^3.0.0",
     "@nats-io/transport-node": "^3.0.0",
     "@restatedev/restate-sdk": "^1.9.1",

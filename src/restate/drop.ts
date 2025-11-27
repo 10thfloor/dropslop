@@ -5,22 +5,70 @@ import type {
   Phase,
   RegisterRequest,
   TicketPricing,
+  LotteryProof,
 } from "../lib/types.js";
 import {
   selectWinnersWeighted,
+  selectWinnersWithMultipliers,
   generateLotterySeed,
   getTotalTickets,
+  getTotalEffectiveTickets,
   getTicketPricing,
+  generateLotteryCommitment,
+  createParticipantSnapshot,
+  generateVerifiableSeed,
+  createLotteryProof,
 } from "../lib/lottery.js";
 import { publishDropState } from "../lib/nats.js";
 import { userRolloverObject } from "./user-rollover.js";
+import { userLoyaltyObject } from "./user-loyalty.js";
+import { participantObject } from "./participant.js";
+import { config } from "../lib/config.js";
 
 // State keys
 const STATE_KEY = "state";
 
-// Default ticket config
-const DEFAULT_PRICE_UNIT = 1.0;
-const DEFAULT_MAX_TICKETS = 10;
+// Use config for defaults
+const DEFAULT_PRICE_UNIT = config.drop.defaultPriceUnit;
+const DEFAULT_MAX_TICKETS = config.drop.defaultMaxTickets;
+const DEFAULT_BACKUP_MULTIPLIER = config.backup.defaultMultiplier;
+
+/**
+ * Helper to get current time deterministically in Restate context
+ * Wraps Date.now() in ctx.run() to ensure consistent replay behavior
+ */
+async function getCurrentTime(ctx: restate.ObjectContext): Promise<number> {
+  return ctx.run("get_time", () => Date.now());
+}
+
+/**
+ * Helper to publish drop state as a side effect
+ * Wrapped in ctx.run() to ensure idempotent execution during replay
+ */
+async function publishDropStateEffect(
+  ctx: restate.ObjectContext,
+  dropId: string,
+  state: DropState,
+  extra?: { purchaseEnd?: number }
+): Promise<void> {
+  const participantCount = Object.keys(state.participantTickets).length;
+  const totalTickets = getTotalTickets(state.participantTickets);
+
+  await ctx.run("publish_drop_state", async () => {
+    publishDropState(dropId, {
+      type: "drop",
+      phase: state.phase,
+      participantCount,
+      totalTickets,
+      inventory: state.inventory,
+      registrationEnd: state.config.registrationEnd,
+      purchaseEnd: extra?.purchaseEnd ?? state.purchaseEnd,
+      serverTime: Date.now(),
+      lotteryCommitment: state.config.lotteryCommitment,
+      initialInventory: state.initialInventory,
+    });
+  });
+}
 
 // Define the Drop virtual object
 export const dropObject = restate.object({
@@ -28,63 +76,78 @@ export const dropObject = restate.object({
   handlers: {
     /**
      * Initialize a new drop with configuration
+     * Generates lottery commitment for verifiable randomness
      * Automatically schedules lottery to run when registration ends
      */
     initialize: async (
       ctx: restate.ObjectContext,
-      config: DropConfig
-    ): Promise<{ success: boolean; dropId: string }> => {
+      dropConfig: DropConfig
+    ): Promise<{ success: boolean; dropId: string; lotteryCommitment?: string }> => {
       const existing = await ctx.get<DropState>(STATE_KEY);
 
       if (existing) {
-        return { success: true, dropId: config.dropId };
+        return {
+          success: true,
+          dropId: dropConfig.dropId,
+          lotteryCommitment: existing.config.lotteryCommitment,
+        };
       }
 
-      // Apply defaults for ticket pricing
+      // Generate lottery commitment for verifiable randomness
+      // Secret is stored, commitment is published
+      const { secret, commitment } = await ctx.run(
+        "generate_commitment",
+        () => generateLotteryCommitment()
+      );
+
+      // Apply defaults for ticket pricing and backup
       const fullConfig: DropConfig = {
-        ...config,
-        ticketPriceUnit: config.ticketPriceUnit ?? DEFAULT_PRICE_UNIT,
-        maxTicketsPerUser: config.maxTicketsPerUser ?? DEFAULT_MAX_TICKETS,
+        ...dropConfig,
+        ticketPriceUnit: dropConfig.ticketPriceUnit ?? DEFAULT_PRICE_UNIT,
+        maxTicketsPerUser: dropConfig.maxTicketsPerUser ?? DEFAULT_MAX_TICKETS,
+        backupMultiplier: dropConfig.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER,
+        lotteryCommitment: commitment,
       };
 
       const state: DropState = {
         phase: "registration",
-        inventory: config.inventory,
+        inventory: dropConfig.inventory,
+        initialInventory: dropConfig.inventory,
         participantTickets: {},
+        participantMultipliers: {},
         winners: [],
+        backupWinners: [],
+        expiredWinners: [],
         config: fullConfig,
+        lotterySecret: secret,
       };
 
       await ctx.set(STATE_KEY, state);
 
       // Schedule the lottery to run automatically when registration ends
-      const now = Date.now();
+      const now = await getCurrentTime(ctx);
       const delayMs = Math.max(0, fullConfig.registrationEnd - now);
 
       if (delayMs > 0) {
         // Schedule lottery using delayed send (fire-and-forget)
         ctx
-          .objectSendClient(dropObject, config.dropId, { delay: delayMs })
+          .objectSendClient(dropObject, dropConfig.dropId, { delay: delayMs })
           .runLottery({});
 
         console.log(
-          `[Drop ${config.dropId}] Lottery scheduled in ${Math.round(
+          `[Drop ${dropConfig.dropId}] Lottery scheduled in ${Math.round(
             delayMs / 1000
-          )}s`
+          )}s, commitment: ${commitment.substring(0, 16)}...`
         );
       }
 
-      return { success: true, dropId: config.dropId };
+      return { success: true, dropId: dropConfig.dropId, lotteryCommitment: commitment };
     },
 
     /**
      * Register a participant for the drop (with ticket count)
      * Automatically applies rollover entries, then free entry, then paid entries
-     *
-     * Entry breakdown:
-     * - Rollover entries (from previous losses, consumed from global balance)
-     * - 1 Free entry (if not fully covered by rollover)
-     * - Paid entries (remaining after rollover + free)
+     * Fetches user's loyalty multiplier for weighted selection
      */
     register: async (
       ctx: restate.ObjectContext,
@@ -94,9 +157,12 @@ export const dropObject = restate.object({
       participantCount: number;
       totalTickets: number;
       userTickets: number;
+      effectiveTickets: number;
       position: number;
       rolloverUsed: number;
       paidEntries: number;
+      loyaltyTier: string;
+      loyaltyMultiplier: number;
     }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
@@ -113,7 +179,7 @@ export const dropObject = restate.object({
         );
       }
 
-      const now = Date.now();
+      const now = await getCurrentTime(ctx);
       if (
         now < state.config.registrationStart ||
         now >= state.config.registrationEnd
@@ -124,9 +190,10 @@ export const dropObject = restate.object({
       }
 
       // Validate ticket count
+      const maxTickets = state.config.maxTicketsPerUser ?? DEFAULT_MAX_TICKETS;
       const desiredTickets = Math.max(
         1,
-        Math.min(request.tickets || 1, state.config.maxTicketsPerUser)
+        Math.min(request.tickets || 1, maxTickets)
       );
 
       const existingTickets = state.participantTickets[request.userId] || 0;
@@ -138,6 +205,11 @@ export const dropObject = restate.object({
           errorCode: 409,
         });
       }
+
+      // Get user's loyalty multiplier
+      const loyaltyInfo = await ctx
+        .objectClient(userLoyaltyObject, request.userId)
+        .getMultiplier({});
 
       // Check user's rollover balance
       const rolloverBalance = await ctx
@@ -166,10 +238,13 @@ export const dropObject = restate.object({
 
       // Register with the calculated total
       const actualTickets = rolloverUsed + freeEntry + paidEntries;
+      const effectiveTickets = Math.floor(actualTickets * loyaltyInfo.multiplier);
+      
       state.participantTickets[request.userId] = actualTickets;
+      state.participantMultipliers[request.userId] = loyaltyInfo.multiplier;
       await ctx.set(STATE_KEY, state);
 
-      // Update participant state with entry breakdown
+      // Update participant state with entry breakdown and loyalty info
       const participantCount = Object.keys(state.participantTickets).length;
       ctx
         .objectSendClient(
@@ -179,40 +254,38 @@ export const dropObject = restate.object({
         .setRegistered({
           position: participantCount,
           tickets: actualTickets,
+          effectiveTickets,
           rolloverUsed,
           paidEntries,
+          loyaltyTier: loyaltyInfo.tier,
+          loyaltyMultiplier: loyaltyInfo.multiplier,
         });
 
-      const totalTickets = getTotalTickets(state.participantTickets);
-
-      // Publish update to NATS (fire-and-forget, don't await in critical path)
-      publishDropState(state.config.dropId, {
-        type: "drop",
-        phase: state.phase,
-        participantCount,
-        totalTickets,
-        inventory: state.inventory,
-        registrationEnd: state.config.registrationEnd,
-        serverTime: Date.now(),
-      });
+      // Publish update to NATS (wrapped in side effect)
+      await publishDropStateEffect(ctx, state.config.dropId, state);
 
       console.log(
-        `[Drop ${state.config.dropId}] User ${request.userId} registered: ${actualTickets} total (${rolloverUsed} rollover, ${freeEntry} free, ${paidEntries} paid)`
+        `[Drop ${state.config.dropId}] User ${request.userId} registered: ${actualTickets} tickets × ${loyaltyInfo.multiplier}x (${loyaltyInfo.tier}) = ${effectiveTickets} effective`
       );
 
       return {
         success: true,
         participantCount,
-        totalTickets,
+        totalTickets: getTotalTickets(state.participantTickets),
         userTickets: actualTickets,
+        effectiveTickets,
         position: participantCount,
         rolloverUsed,
         paidEntries,
+        loyaltyTier: loyaltyInfo.tier,
+        loyaltyMultiplier: loyaltyInfo.multiplier,
       };
     },
 
     /**
-     * Run the lottery to select winners (weighted by tickets)
+     * Run the lottery to select winners (weighted by tickets and loyalty multipliers)
+     * Also selects backup winners for auto-promotion if primary winners don't purchase
+     * Creates verifiable lottery proof
      */
     runLottery: async (
       ctx: restate.ObjectContext,
@@ -220,8 +293,10 @@ export const dropObject = restate.object({
     ): Promise<{
       success: boolean;
       winners: string[];
+      backupWinners: string[];
       participantCount: number;
       totalTickets: number;
+      totalEffectiveTickets: number;
     }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
@@ -233,57 +308,121 @@ export const dropObject = restate.object({
 
       const participantCount = Object.keys(state.participantTickets).length;
       const totalTickets = getTotalTickets(state.participantTickets);
+      const totalEffectiveTickets = getTotalEffectiveTickets(
+        state.participantTickets,
+        state.participantMultipliers
+      );
 
       if (state.phase !== "registration") {
         // Already ran lottery
         return {
           success: true,
           winners: state.winners,
+          backupWinners: state.backupWinners,
           participantCount,
           totalTickets,
+          totalEffectiveTickets,
         };
       }
 
       state.phase = "lottery";
 
-      // Select winners using weighted selection
-      const seed = generateLotterySeed(state);
-      const winners = selectWinnersWeighted(
+      // Calculate how many winners + backups to select
+      const primaryWinnerCount = Math.min(state.inventory, participantCount);
+      const backupMultiplier = state.config.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER;
+      const totalToSelect = Math.min(
+        Math.ceil(primaryWinnerCount * backupMultiplier),
+        participantCount
+      );
+
+      // Create verifiable seed from committed secret + participant snapshot
+      const participantSnapshot = createParticipantSnapshot(
         state.participantTickets,
-        Math.min(state.inventory, participantCount),
+        state.participantMultipliers
+      );
+      const seed = generateVerifiableSeed(state.lotterySecret!, participantSnapshot);
+
+      // Select all winners at once using multipliers
+      const allSelected = selectWinnersWithMultipliers(
+        state.participantTickets,
+        state.participantMultipliers,
+        totalToSelect,
         seed
       );
 
+      // Split into primary winners and backups
+      const winners = allSelected.slice(0, primaryWinnerCount);
+      const backupWinners = allSelected.slice(primaryWinnerCount);
+
       state.winners = winners;
+      state.backupWinners = backupWinners;
+      state.expiredWinners = [];
       state.phase = "purchase";
+
+      // Create lottery proof for verification
+      state.lotteryProof = createLotteryProof(
+        state.lotterySecret!,
+        state.config.lotteryCommitment!,
+        state.participantTickets,
+        state.participantMultipliers,
+        winners,
+        backupWinners
+      );
+
       // Calculate purchase window end time
-      state.purchaseEnd = Date.now() + state.config.purchaseWindow * 1000;
+      const now = await getCurrentTime(ctx);
+      state.purchaseEnd = now + state.config.purchaseWindow * 1000;
       await ctx.set(STATE_KEY, state);
 
-      // Publish update to NATS
-      publishDropState(state.config.dropId, {
-        type: "drop",
-        phase: state.phase,
-        participantCount,
-        totalTickets,
-        inventory: state.inventory,
-        registrationEnd: state.config.registrationEnd,
-        purchaseEnd: state.purchaseEnd,
-        serverTime: Date.now(),
-      });
+      // Publish update to NATS (wrapped in side effect)
+      await publishDropStateEffect(ctx, state.config.dropId, state);
 
-      // Notify all participants
-      for (const userId of Object.keys(state.participantTickets)) {
-        const isWinner = winners.includes(userId);
+      // Notify primary winners
+      for (let i = 0; i < winners.length; i++) {
+        const userId = winners[i];
         ctx
           .objectSendClient(
             participantObject,
             `${state.config.dropId}:${userId}`
           )
           .notifyResult({
-            isWinner,
-            position: isWinner ? winners.indexOf(userId) + 1 : undefined,
+            isWinner: true,
+            position: i + 1,
           });
+      }
+
+      // Notify backup winners
+      for (let i = 0; i < backupWinners.length; i++) {
+        const userId = backupWinners[i];
+        ctx
+          .objectSendClient(
+            participantObject,
+            `${state.config.dropId}:${userId}`
+          )
+          .notifyBackup({
+            backupPosition: i + 1,
+            totalBackups: backupWinners.length,
+          });
+      }
+
+      // Notify losers (not selected at all)
+      const selectedSet = new Set(allSelected);
+      for (const userId of Object.keys(state.participantTickets)) {
+        if (!selectedSet.has(userId)) {
+          ctx
+            .objectSendClient(
+              participantObject,
+              `${state.config.dropId}:${userId}`
+            )
+            .notifyResult({ isWinner: false });
+        }
+      }
+
+      // Record participation for all participants (for loyalty tracking)
+      for (const userId of Object.keys(state.participantTickets)) {
+        ctx
+          .objectSendClient(userLoyaltyObject, userId)
+          .recordParticipation({ dropId: state.config.dropId });
       }
 
       // Schedule purchase window closure
@@ -295,19 +434,22 @@ export const dropObject = restate.object({
         .closePurchaseWindow({});
 
       console.log(
-        `[Drop ${state.config.dropId}] Purchase window will close in ${state.config.purchaseWindow}s`
+        `[Drop ${state.config.dropId}] Lottery complete: ${winners.length} winners, ${backupWinners.length} backups. Purchase window closes in ${state.config.purchaseWindow}s`
       );
 
       return {
         success: true,
         winners: state.winners,
+        backupWinners: state.backupWinners,
         participantCount,
         totalTickets,
+        totalEffectiveTickets,
       };
     },
 
     /**
-     * Start purchase phase for a winner (generates token)
+     * Start purchase phase for a winner (generates secure token)
+     * Schedules expiry check for auto-promotion of backups
      */
     startPurchase: async (
       ctx: restate.ObjectContext,
@@ -344,10 +486,19 @@ export const dropObject = restate.object({
         });
       }
 
-      // Generate purchase token with timestamp
-      const timestamp = Date.now();
-      const purchaseToken = `${state.config.dropId}:${input.userId}:${timestamp}`;
-      const expiresAt = timestamp + state.config.purchaseWindow * 1000;
+      const now = await getCurrentTime(ctx);
+      // Use remaining purchase window time (not full window for each winner)
+      const expiresAt = state.purchaseEnd ?? now + state.config.purchaseWindow * 1000;
+
+      // Generate self-verifying HMAC-signed purchase token
+      // Format: shortId.expiry.signature (~41 chars)
+      // Token contains expiration and can be verified without stored state
+      const { generatePurchaseToken } = await import(
+        "../lib/purchase-token.js"
+      );
+      const purchaseToken = await ctx.run("generate_token", () =>
+        generatePurchaseToken(state.config.dropId, input.userId, expiresAt)
+      );
 
       // Update participant state with token
       ctx
@@ -359,6 +510,16 @@ export const dropObject = restate.object({
           purchaseToken,
           expiresAt,
         });
+
+      // Schedule expiry check for this winner (for backup promotion)
+      const timeUntilExpiry = expiresAt - now;
+      if (timeUntilExpiry > 0) {
+        ctx
+          .objectSendClient(dropObject, state.config.dropId, {
+            delay: timeUntilExpiry,
+          })
+          .checkWinnerExpiry({ userId: input.userId });
+      }
 
       return {
         success: true,
@@ -420,16 +581,8 @@ export const dropObject = restate.object({
 
       await ctx.set(STATE_KEY, state);
 
-      // Publish update to NATS
-      publishDropState(state.config.dropId, {
-        type: "drop",
-        phase: state.phase,
-        participantCount: Object.keys(state.participantTickets).length,
-        totalTickets: getTotalTickets(state.participantTickets),
-        inventory: state.inventory,
-        registrationEnd: state.config.registrationEnd,
-        serverTime: Date.now(),
-      });
+      // Publish update to NATS (wrapped in side effect)
+      await publishDropStateEffect(ctx, state.config.dropId, state);
 
       return {
         success: true,
@@ -460,28 +613,189 @@ export const dropObject = restate.object({
       state.phase = "completed";
       await ctx.set(STATE_KEY, state);
 
-      const participantCount = Object.keys(state.participantTickets).length;
-      const totalTickets = getTotalTickets(state.participantTickets);
-
-      // Publish update to NATS
-      publishDropState(state.config.dropId, {
-        type: "drop",
-        phase: state.phase,
-        participantCount,
-        totalTickets,
-        inventory: state.inventory,
-        registrationEnd: state.config.registrationEnd,
-        serverTime: Date.now(),
-      });
+      // Publish update to NATS (wrapped in side effect)
+      await publishDropStateEffect(ctx, state.config.dropId, state);
 
       console.log(
-        `[Drop ${state.config.dropId}] Purchase window closed. Final inventory: ${state.inventory}`
+        `[Drop ${state.config.dropId}] Purchase window closed. Final inventory: ${state.inventory}, expired winners: ${state.expiredWinners.length}`
       );
 
       return {
         success: true,
         phase: state.phase,
       };
+    },
+
+    /**
+     * Check if a winner's token has expired without purchase
+     * If so, move them to expired list and promote next backup
+     */
+    checkWinnerExpiry: async (
+      ctx: restate.ObjectContext,
+      input: { userId: string }
+    ): Promise<{ expired: boolean; promoted?: string }> => {
+      const state = await ctx.get<DropState>(STATE_KEY);
+
+      if (!state || state.phase !== "purchase") {
+        return { expired: false };
+      }
+
+      // Check if user is still in winners list (hasn't purchased)
+      if (!state.winners.includes(input.userId)) {
+        return { expired: false };
+      }
+
+      // Check participant status
+      const participantState = await ctx
+        .objectClient(
+          participantObject,
+          `${state.config.dropId}:${input.userId}`
+        )
+        .getState({});
+
+      // If they've already purchased, nothing to do
+      if (participantState.status === "purchased") {
+        return { expired: false };
+      }
+
+      // Winner hasn't purchased - mark as expired
+      state.winners = state.winners.filter((id) => id !== input.userId);
+      state.expiredWinners.push(input.userId);
+
+      // Notify the expired winner
+      ctx
+        .objectSendClient(
+          participantObject,
+          `${state.config.dropId}:${input.userId}`
+        )
+        .notifyExpiry({});
+
+      // Try to promote a backup
+      let promotedUser: string | undefined;
+      if (state.backupWinners.length > 0 && state.inventory > 0) {
+        promotedUser = state.backupWinners.shift()!;
+        state.winners.push(promotedUser);
+
+        // Notify the promoted backup
+        ctx
+          .objectSendClient(
+            participantObject,
+            `${state.config.dropId}:${promotedUser}`
+          )
+          .notifyPromotion({});
+
+        // Start purchase for the promoted user
+        ctx
+          .objectSendClient(dropObject, state.config.dropId)
+          .startPurchase({ userId: promotedUser });
+
+        console.log(
+          `[Drop ${state.config.dropId}] Winner ${input.userId} expired, promoted backup ${promotedUser}. ${state.backupWinners.length} backups remaining.`
+        );
+      } else {
+        console.log(
+          `[Drop ${state.config.dropId}] Winner ${input.userId} expired, no backups available.`
+        );
+      }
+
+      await ctx.set(STATE_KEY, state);
+
+      // Publish update to NATS
+      await publishDropStateEffect(ctx, state.config.dropId, state);
+
+      return { expired: true, promoted: promotedUser };
+    },
+
+    /**
+     * Manually promote next backup winner (admin use)
+     */
+    promoteBackup: async (
+      ctx: restate.ObjectContext,
+      _input: Record<string, never>
+    ): Promise<{ success: boolean; promotedUser?: string; backupsRemaining: number }> => {
+      const state = await ctx.get<DropState>(STATE_KEY);
+
+      if (!state || state.phase !== "purchase") {
+        return { success: false, backupsRemaining: 0 };
+      }
+
+      if (state.backupWinners.length === 0) {
+        return { success: false, backupsRemaining: 0 };
+      }
+
+      if (state.inventory <= 0) {
+        return { success: false, backupsRemaining: state.backupWinners.length };
+      }
+
+      // Promote next backup
+      const promotedUser = state.backupWinners.shift()!;
+      state.winners.push(promotedUser);
+
+      await ctx.set(STATE_KEY, state);
+
+      // Notify the promoted backup
+      ctx
+        .objectSendClient(
+          participantObject,
+          `${state.config.dropId}:${promotedUser}`
+        )
+        .notifyPromotion({});
+
+      // Start purchase for the promoted user
+      ctx
+        .objectSendClient(dropObject, state.config.dropId)
+        .startPurchase({ userId: promotedUser });
+
+      // Publish update
+      await publishDropStateEffect(ctx, state.config.dropId, state);
+
+      console.log(
+        `[Drop ${state.config.dropId}] Manually promoted backup ${promotedUser}. ${state.backupWinners.length} backups remaining.`
+      );
+
+      return {
+        success: true,
+        promotedUser,
+        backupsRemaining: state.backupWinners.length,
+      };
+    },
+
+    /**
+     * Get lottery proof for public verification
+     * Only available after lottery has run
+     */
+    getLotteryProof: async (
+      ctx: restate.ObjectContext,
+      _input: Record<string, never>
+    ): Promise<{
+      available: boolean;
+      proof?: LotteryProof;
+      commitment?: string;
+    }> => {
+      const state = await ctx.get<DropState>(STATE_KEY);
+
+      if (!state) {
+        return { available: false };
+      }
+
+      // Before lottery runs, only return commitment
+      if (state.phase === "registration") {
+        return {
+          available: false,
+          commitment: state.config.lotteryCommitment,
+        };
+      }
+
+      // After lottery, return full proof
+      if (state.lotteryProof) {
+        return {
+          available: true,
+          proof: state.lotteryProof,
+          commitment: state.config.lotteryCommitment,
+        };
+      }
+
+      return { available: false };
     },
 
     /**
@@ -493,12 +807,16 @@ export const dropObject = restate.object({
     ): Promise<{
       phase: Phase;
       inventory: number;
+      initialInventory: number;
       participantCount: number;
       totalTickets: number;
+      totalEffectiveTickets: number;
       winnerCount: number;
+      backupWinnerCount: number;
       registrationEnd: number;
       purchaseEnd?: number;
       ticketPricing: TicketPricing;
+      lotteryCommitment?: string;
     }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
@@ -507,9 +825,12 @@ export const dropObject = restate.object({
         return {
           phase: "registration",
           inventory: 0,
+          initialInventory: 0,
           participantCount: 0,
           totalTickets: 0,
+          totalEffectiveTickets: 0,
           winnerCount: 0,
+          backupWinnerCount: 0,
           registrationEnd: 0,
           ticketPricing: getTicketPricing(
             DEFAULT_PRICE_UNIT,
@@ -521,19 +842,23 @@ export const dropObject = restate.object({
       return {
         phase: state.phase,
         inventory: state.inventory,
+        initialInventory: state.initialInventory ?? state.inventory,
         participantCount: Object.keys(state.participantTickets).length,
         totalTickets: getTotalTickets(state.participantTickets),
+        totalEffectiveTickets: getTotalEffectiveTickets(
+          state.participantTickets,
+          state.participantMultipliers ?? {}
+        ),
         winnerCount: state.winners.length,
+        backupWinnerCount: state.backupWinners?.length ?? 0,
         registrationEnd: state.config.registrationEnd,
         purchaseEnd: state.purchaseEnd,
         ticketPricing: getTicketPricing(
           state.config.ticketPriceUnit,
           state.config.maxTicketsPerUser
         ),
+        lotteryCommitment: state.config.lotteryCommitment,
       };
     },
   },
 });
-
-// Import participant object for cross-object calls
-import { participantObject } from "./participant.js";

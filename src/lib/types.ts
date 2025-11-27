@@ -1,5 +1,16 @@
 export type Phase = "registration" | "lottery" | "purchase" | "completed";
 
+export type UserStatus =
+  | "not_registered"
+  | "registered"
+  | "winner"
+  | "backup_winner"
+  | "loser"
+  | "purchased"
+  | "expired";
+
+export type LoyaltyTier = "bronze" | "silver" | "gold";
+
 export interface DropConfig {
   dropId: string;
   inventory: number;
@@ -9,25 +20,56 @@ export interface DropConfig {
   // Ticket pricing
   ticketPriceUnit: number; // Base price per additional ticket (default: 1.0)
   maxTicketsPerUser: number; // Maximum tickets per user (default: 10)
+  // Backup winners
+  backupMultiplier?: number; // e.g., 1.5 means 50% extra as backups (default: 1.5)
+  // Verifiable lottery
+  lotteryCommitment?: string; // SHA256 hash of secret, published at drop creation
+}
+
+/**
+ * Lottery proof for verifiable randomness
+ * Published after lottery runs so anyone can verify results
+ */
+export interface LotteryProof {
+  commitment: string; // SHA256(secret) - published before registration ends
+  secret: string; // Revealed after lottery
+  participantSnapshot: string; // Deterministic snapshot of all participants
+  seed: string; // SHA256(secret + participantSnapshot)
+  algorithm: string; // "weighted-fisher-yates-v1"
+  timestamp: number; // When lottery ran
+  winners: string[]; // Selected winners for verification
+  backupWinners: string[]; // Backup winners
 }
 
 export interface DropState {
   phase: Phase;
   inventory: number;
+  initialInventory: number; // Original inventory for tracking
   participantTickets: Record<string, number>; // userId -> ticket count
+  participantMultipliers: Record<string, number>; // userId -> loyalty multiplier at registration time
   winners: string[]; // userIds
+  backupWinners: string[]; // Ordered backup winner list
+  expiredWinners: string[]; // Winners who didn't purchase in time
   config: DropConfig;
   purchaseEnd?: number; // Unix timestamp ms - when purchase window closes
+  // Verifiable lottery
+  lotterySecret?: string; // Revealed after lottery runs
+  lotteryProof?: LotteryProof; // Full audit trail
 }
 
 export interface ParticipantState {
-  status: "not_registered" | "registered" | "winner" | "loser" | "purchased";
+  status: UserStatus;
   tickets?: number; // Total entries for this drop
+  effectiveTickets?: number; // Tickets after loyalty multiplier applied
   rolloverUsed?: number; // How many rollover entries were consumed this drop
   paidEntries?: number; // How many entries were paid (for rollover calculation)
-  queuePosition?: number;
+  queuePosition?: number; // Position for winners (1, 2, 3...)
+  backupPosition?: number; // Position in backup queue (1, 2, 3...)
   purchaseToken?: string;
   expiresAt?: number; // Unix timestamp
+  // Loyalty info at time of registration
+  loyaltyTier?: LoyaltyTier;
+  loyaltyMultiplier?: number;
 }
 
 /**
@@ -37,6 +79,18 @@ export interface ParticipantState {
 export interface UserRolloverState {
   balance: number; // Available rollover entries
   lastUpdated: number; // Timestamp of last update
+}
+
+/**
+ * Global user loyalty state (cross-drop)
+ * Tracks participation history for tier calculation
+ */
+export interface UserLoyaltyState {
+  dropsParticipated: string[]; // List of dropIds user has participated in
+  lastParticipationDate: number; // Timestamp of last participation
+  currentStreak: number; // Consecutive drops participated
+  tier: LoyaltyTier;
+  multiplier: number; // Current multiplier (1.0, 1.2, 1.5, etc.)
 }
 
 export interface BotValidationRequest {
@@ -70,13 +124,22 @@ export interface SSEEvent {
   registrationEnd?: number; // Unix timestamp ms
   purchaseEnd?: number; // Unix timestamp ms - when purchase window closes
   serverTime?: number; // Server's current time for clock sync
-  status?: "registered" | "winner" | "loser";
+  status?: UserStatus;
   tickets?: number; // User's ticket count
+  effectiveTickets?: number; // Tickets after loyalty multiplier
   position?: number;
   token?: string;
   // Rollover info
   rolloverUsed?: number; // Rollover entries consumed this drop
   rolloverBalance?: number; // Global rollover balance remaining
+  // Backup winner info
+  backupPosition?: number; // Position in backup queue
+  promoted?: boolean; // True when backup is promoted to winner
+  // Lottery verification
+  lotteryCommitment?: string; // Published commitment hash
+  // Loyalty info
+  loyaltyTier?: LoyaltyTier;
+  loyaltyMultiplier?: number;
 }
 
 export interface RegisterRequest {

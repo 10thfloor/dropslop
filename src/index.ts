@@ -1,56 +1,46 @@
+/**
+ * Main application entry point
+ * Starts API, SSE, and Restate servers
+ */
+
 import { serve } from "@hono/node-server";
 import apiApp from "./api/server.js";
 import sseApp from "./sse/server.js";
 import "./restate/server.js"; // Import to start Restate server
+import { initNatsKv } from "./lib/nats-kv.js";
+import { config } from "./lib/config.js";
+import { validateStartup, printStartupBanner } from "./lib/startup.js";
 
-const API_PORT = Number.parseInt(process.env.API_PORT || "3003", 10);
-const SSE_PORT = Number.parseInt(process.env.SSE_PORT || "3004", 10);
-const RESTATE_PORT = Number.parseInt(process.env.RESTATE_PORT || "8081", 10);
+// Validate environment variables at startup
+validateStartup();
+
+// Initialize NATS KV stores for distributed state
+console.log("Initializing NATS KV stores...");
+initNatsKv()
+  .then(() => {
+    console.log("NATS KV stores initialized");
+  })
+  .catch((err) => {
+    console.error("Failed to initialize NATS KV stores:", err);
+    console.warn("Continuing without distributed state - single instance mode only");
+  });
 
 // Start API server
-console.log(`Starting API server on port ${API_PORT}...`);
+console.log(`Starting API server on port ${config.server.apiPort}...`);
 serve({
   fetch: apiApp.fetch,
-  port: API_PORT,
+  port: config.server.apiPort,
 });
 
 // Start SSE server
-console.log(`Starting SSE server on port ${SSE_PORT}...`);
+console.log(`Starting SSE server on port ${config.server.ssePort}...`);
 serve({
   fetch: sseApp.fetch,
-  port: SSE_PORT,
+  port: config.server.ssePort,
 });
 
 // Restate server is started by importing restate/server.js
 // It will listen on the port specified by RESTATE_PORT environment variable
-// or default to the Restate SDK default port
 
-console.log(`
-╔══════════════════════════════════════════════════════════╗
-║           Product Drop Backend Started                   ║
-╠══════════════════════════════════════════════════════════╣
-║  API Server:      http://localhost:${API_PORT.toString().padEnd(
-  4
-)}                  ║
-║  SSE Server:      http://localhost:${SSE_PORT.toString().padEnd(
-  4
-)}                  ║
-║  Restate Worker:  http://localhost:${RESTATE_PORT.toString().padEnd(
-  4
-)}                  ║
-╠══════════════════════════════════════════════════════════╣
-║  Next steps:                                             ║
-║  1. Start Restate: docker-compose up -d                  ║
-║  2. Register worker with Restate:                        ║
-║     curl localhost:9070/deployments -H 'content-type:    ║
-║     application/json' -d '{"uri":"http://host.docker.    ║
-║     internal:${RESTATE_PORT.toString().padEnd(
-  4
-)}"}'                                ║
-║  3. Initialize a drop:                                   ║
-║     npx tsx src/scripts/init-drop.ts                     ║
-║  4. Open: http://localhost:${API_PORT.toString().padEnd(
-  4
-)}                          ║
-╚══════════════════════════════════════════════════════════╝
-`);
+// Print startup banner with connection info
+printStartupBanner();

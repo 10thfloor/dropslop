@@ -1,0 +1,39 @@
+# Next.js Frontend for Product Drop
+# Public-facing web application
+
+app = "drop-web"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  # INTERNAL_API_URL and INTERNAL_SSE_URL are set via secrets by deploy.sh
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[checks]
+  [checks.health]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/"
+    port = 3000
+    timeout = "5s"
+    type = "http"
+
+[vm]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

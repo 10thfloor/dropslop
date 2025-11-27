@@ -1,12 +1,18 @@
+/**
+ * SSE (Server-Sent Events) server for real-time updates
+ * Uses NATS for event subscriptions
+ */
+
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import {
-  getNatsConnection,
   subscribeDropState,
   subscribeUserState,
   decodeMessage,
 } from "../lib/nats.js";
+import { callRestateSafe } from "../lib/restate-client.js";
+import { config } from "../lib/config.js";
 import type {
   SSEEvent,
   ParticipantState,
@@ -15,15 +21,11 @@ import type {
 
 const sseApp = new Hono();
 
-// CORS middleware
+// CORS middleware - uses shared config
 sseApp.use(
   "*",
   cors({
-    origin: [
-      "http://localhost:3005",
-      "http://localhost:3003",
-      "http://127.0.0.1:3005",
-    ],
+    origin: config.security.corsOrigins,
     allowMethods: ["GET", "OPTIONS"],
     allowHeaders: ["Content-Type", "Cache-Control"],
     exposeHeaders: ["Content-Type"],
@@ -31,39 +33,8 @@ sseApp.use(
   })
 );
 
-const RESTATE_URL = process.env.RESTATE_INGRESS_URL || "http://localhost:8080";
-
-/**
- * Call Restate ingress API
- */
-async function callRestate(
-  service: string,
-  key: string,
-  method: string,
-  payload: unknown = {}
-): Promise<unknown> {
-  const url = `${RESTATE_URL}/${service}/${key}/${method}`;
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      console.error(`Restate error: ${response.status}`);
-      return null;
-    }
-
-    return response.json();
-  } catch (error) {
-    console.error("Failed to call Restate:", error);
-    return null;
-  }
-}
+// Health check endpoint
+sseApp.get("/health", (c) => c.json({ status: "ok", service: "sse" }));
 
 interface DropStateResponse {
   phase: string;
@@ -88,13 +59,14 @@ sseApp.get("/events/:dropId/:userId", async (c) => {
   return streamSSE(c, async (stream) => {
     // 1. Send initial state from Restate (bootstrap)
     try {
-      // Get drop state
-      const dropState = (await callRestate(
+      // Get drop state using shared client
+      const dropState = await callRestateSafe<DropStateResponse>(
         "Drop",
         dropId,
         "getState",
-        {}
-      )) as DropStateResponse | null;
+        {},
+        { timeoutMs: config.restate.apiTimeoutMs }
+      );
 
       if (dropState) {
         const connectedEvent: SSEEvent = {
@@ -107,6 +79,8 @@ sseApp.get("/events/:dropId/:userId", async (c) => {
           registrationEnd: dropState.registrationEnd,
           purchaseEnd: dropState.purchaseEnd,
           serverTime: Date.now(),
+          lotteryCommitment: dropState.lotteryCommitment,
+          initialInventory: dropState.initialInventory,
         };
 
         await stream.writeSSE({
@@ -116,12 +90,15 @@ sseApp.get("/events/:dropId/:userId", async (c) => {
       }
 
       // Get user state (includes rolloverBalance from global user state)
-      const participantState = (await callRestate(
+      const participantState = await callRestateSafe<
+        ParticipantState & { rolloverBalance?: number }
+      >(
         "Participant",
         connectionKey,
         "getState",
-        {}
-      )) as (ParticipantState & { rolloverBalance?: number }) | null;
+        {},
+        { timeoutMs: config.restate.apiTimeoutMs }
+      );
 
       if (participantState) {
         const userEvent: SSEEvent = {

@@ -1,7 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { DropState, UserState, SSEEvent } from "@/lib/types";
+import type { DropState, UserState, SSEEvent, TicketPricing } from "@/lib/types";
+
+interface SSEConnectedEvent {
+  type: "connected";
+  phase: DropState["phase"];
+  inventory?: number;
+  participantCount?: number;
+  totalTickets?: number;
+  totalEffectiveTickets?: number;
+  registrationEnd?: number;
+  purchaseEnd?: number;
+  serverTime?: number;
+  ticketPricing?: TicketPricing;
+  lotteryCommitment?: string;
+}
 
 interface UseSSEOptions {
   dropId: string;
@@ -17,14 +31,24 @@ interface UseSSEReturn {
   clockOffset: number; // serverTime - clientTime (for countdown sync)
 }
 
+const defaultTicketPricing: TicketPricing = {
+  priceUnit: 1,
+  maxTickets: 10,
+  costs: [0, 0, 1, 5, 14, 30, 55, 91, 140, 204, 285], // Pre-calculated for 0-10 tickets
+};
+
 const defaultDropState: DropState = {
   phase: "registration",
   inventory: 0,
+  initialInventory: 0,
   participantCount: 0,
   totalTickets: 0,
+  totalEffectiveTickets: 0,
   winnerCount: 0,
+  backupWinnerCount: 0,
   registrationEnd: 0,
   purchaseEnd: undefined,
+  ticketPricing: defaultTicketPricing,
 };
 
 const defaultUserState: UserState = {
@@ -88,7 +112,7 @@ export function useSSE({
 
     eventSource.addEventListener("connected", (e) => {
       try {
-        const data = JSON.parse(e.data) as SSEEvent;
+        const data = JSON.parse(e.data) as SSEConnectedEvent;
         if (data.type === "connected") {
           // Sync clock on initial connection
           updateClockOffset(data.serverTime);
@@ -96,9 +120,14 @@ export function useSSE({
           setDropState((prev) => ({
             ...prev,
             phase: data.phase,
+            inventory: data.inventory ?? prev.inventory,
+            participantCount: data.participantCount ?? prev.participantCount,
             totalTickets: data.totalTickets || 0,
+            totalEffectiveTickets: data.totalEffectiveTickets || 0,
             registrationEnd: data.registrationEnd || 0,
             purchaseEnd: data.purchaseEnd,
+            ticketPricing: data.ticketPricing || prev.ticketPricing,
+            lotteryCommitment: data.lotteryCommitment,
           }));
         }
       } catch (err) {
@@ -121,6 +150,7 @@ export function useSSE({
             totalTickets: data.totalTickets || 0,
             registrationEnd: data.registrationEnd,
             purchaseEnd: data.purchaseEnd,
+            lotteryCommitment: data.lotteryCommitment || prev.lotteryCommitment,
           }));
         }
       } catch (err) {
@@ -132,14 +162,22 @@ export function useSSE({
       try {
         const data = JSON.parse(e.data) as SSEEvent;
         if (data.type === "user") {
-          setUserState({
+          setUserState((prev) => ({
+            ...prev,
             status: data.status,
             tickets: data.tickets || 0,
+            effectiveTickets: data.effectiveTickets,
             queuePosition: data.position,
             purchaseToken: data.token,
             rolloverUsed: data.rolloverUsed,
             rolloverBalance: data.rolloverBalance,
-          });
+            // Backup winner info
+            backupPosition: data.backupPosition,
+            promoted: data.promoted,
+            // Loyalty info
+            loyaltyTier: data.loyaltyTier,
+            loyaltyMultiplier: data.loyaltyMultiplier,
+          }));
         }
       } catch (err) {
         console.error("Failed to parse user event:", err);

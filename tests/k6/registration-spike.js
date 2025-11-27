@@ -13,10 +13,8 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter, Trend } from "k6/metrics";
 import { solvePow } from "./lib/pow-solver.js";
-
-// Configuration
-const API_URL = __ENV.API_URL || "http://localhost:3003";
-const DROP_ID = __ENV.DROP_ID || "demo-drop-1";
+import { API_URL, generateDropId } from "./lib/config.js";
+import { initializeDrop } from "./lib/restate.js";
 
 // Custom metrics
 const registrationSuccess = new Counter("registration_success");
@@ -47,7 +45,8 @@ export const options = {
   },
 };
 
-export default function () {
+export default function (data) {
+  const dropId = data.dropId;
   const userId = `k6-spike-${__VU}-${__ITER}-${Date.now()}`;
 
   // 1. Get challenge
@@ -78,7 +77,7 @@ export default function () {
   // 3. Register
   const regStart = Date.now();
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets: 1,
@@ -107,6 +106,29 @@ export default function () {
 
   // Small delay between iterations
   sleep(0.1);
+}
+
+export function setup() {
+  // Generate drop ID once in setup, shared by all VUs
+  const dropId = __ENV.DROP_ID || generateDropId("spike");
+
+  console.log(`\n⚡ Registration Spike Test`);
+  console.log(`   Drop ID: ${dropId}\n`);
+
+  // Initialize drop for spike testing
+  const result = initializeDrop(dropId, {
+    inventory: 10000, // Large inventory
+    registrationEnd: Date.now() + 30 * 60 * 1000, // 30 minutes
+    purchaseWindow: 300,
+  });
+
+  if (!result.ok) {
+    console.log(`⚠️ Drop init: ${result.status} - continuing anyway`);
+  } else {
+    console.log(`✅ Drop initialized`);
+  }
+
+  return { dropId };
 }
 
 export function handleSummary(data) {

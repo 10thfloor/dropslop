@@ -15,8 +15,13 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter, Trend, Rate } from "k6/metrics";
-import { API_URL, DROP_ID, JSON_HEADERS } from "./lib/config.js";
+import { API_URL, RESTATE_URL, JSON_HEADERS, generateDropId } from "./lib/config.js";
 import { solvePow } from "./lib/pow-solver.js";
+import { initializeDrop } from "./lib/restate.js";
+
+// Drop ID - shared across all scenarios via exec.scenario.env
+// This is set in the Makefile or defaults to auto-generated in setup
+let DROP_ID = __ENV.DROP_ID;
 
 // Custom metrics
 const challengeSuccess = new Counter("challenge_success");
@@ -74,10 +79,36 @@ export const options = {
 };
 
 /**
+ * Setup - Initialize drop (runs once before all scenarios)
+ */
+export function setup() {
+  // Generate drop ID once, shared by all VUs
+  DROP_ID = DROP_ID || generateDropId("bot-test");
+
+  console.log(`\n🤖 Bot Detection Test`);
+  console.log(`   Drop ID: ${DROP_ID}\n`);
+
+  const result = initializeDrop(DROP_ID, {
+    inventory: 10000, // Large inventory for stress testing
+    registrationEnd: Date.now() + 30 * 60 * 1000, // 30 minutes
+    purchaseWindow: 300,
+  });
+
+  if (!result.ok) {
+    console.log(`⚠️ Drop init: ${result.status} - continuing anyway`);
+  } else {
+    console.log(`✅ Drop initialized: ${DROP_ID}`);
+  }
+
+  return { dropId: DROP_ID };
+}
+
+/**
  * Phase 1: Flood the challenge endpoint
  * Tests challenge generation throughput
  */
-export function challengeFlood() {
+export function challengeFlood(data) {
+  const dropId = data?.dropId || DROP_ID;
   const start = Date.now();
   const res = http.get(`${API_URL}/api/pow/challenge`, { timeout: "10s" });
   challengeTime.add(Date.now() - start);
@@ -107,7 +138,8 @@ export function challengeFlood() {
  * Phase 2: Submit invalid solutions
  * Tests rejection of bad PoW solutions
  */
-export function invalidSolutions() {
+export function invalidSolutions(data) {
+  const dropId = data?.dropId || DROP_ID;
   const userId = `k6-invalid-${__VU}-${__ITER}-${Date.now()}`;
 
   // Get a valid challenge first
@@ -131,7 +163,7 @@ export function invalidSolutions() {
   const badSolution = invalidSolutions[__ITER % invalidSolutions.length];
 
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets: 1,
@@ -168,7 +200,9 @@ export function invalidSolutions() {
  * Phase 3: Replay attack simulation
  * Tests that used challenges are rejected
  */
-export function replayAttacks() {
+export function replayAttacks(data) {
+  const dropId = data?.dropId || DROP_ID;
+
   if (usedChallenges.length === 0) {
     sleep(1);
     return;
@@ -189,7 +223,7 @@ export function replayAttacks() {
   }
 
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets: 1,
@@ -229,7 +263,8 @@ export function replayAttacks() {
  * Phase 4: Valid registration flow (baseline)
  * Ensures the system works correctly under load
  */
-export function validFlow() {
+export function validFlow(data) {
+  const dropId = data?.dropId || DROP_ID;
   const userId = `k6-valid-${__VU}-${__ITER}-${Date.now()}`;
 
   // 1. Get fresh challenge
@@ -255,7 +290,7 @@ export function validFlow() {
 
   // 3. Register with valid solution
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets: 1,

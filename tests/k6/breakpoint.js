@@ -16,8 +16,9 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter, Trend, Rate, Gauge } from "k6/metrics";
-import { API_URL, DROP_ID, JSON_HEADERS } from "./lib/config.js";
+import { API_URL, JSON_HEADERS, generateDropId } from "./lib/config.js";
 import { solvePow } from "./lib/pow-solver.js";
+import { initializeDrop } from "./lib/restate.js";
 
 // Configuration
 const MAX_RATE = Number(__ENV.MAX_RATE) || 500;
@@ -62,7 +63,8 @@ export const options = {
   },
 };
 
-export default function () {
+export default function (data) {
+  const dropId = data.dropId;
   const userId = `k6-bp-${__VU}-${__ITER}-${Date.now()}`;
   const iterStart = Date.now();
 
@@ -96,7 +98,7 @@ export default function () {
   // 3. Register
   const regStart = Date.now();
   const registerRes = http.post(
-    `${API_URL}/api/drop/${DROP_ID}/register`,
+    `${API_URL}/api/drop/${dropId}/register`,
     JSON.stringify({
       userId,
       tickets: 1,
@@ -136,10 +138,26 @@ export default function () {
 }
 
 export function setup() {
+  // Generate drop ID once in setup, shared by all VUs
+  const dropId = __ENV.DROP_ID || generateDropId("breakpoint");
+
   // Store start time for rate calculation
   __ENV.__START_TIME = Date.now();
-  console.log(`\n🎯 Breakpoint Test: Ramping from 10 to ${MAX_RATE} req/s\n`);
-  return { startTime: Date.now() };
+  console.log(`\n🎯 Breakpoint Test: Ramping from 10 to ${MAX_RATE} req/s`);
+  console.log(`   Drop ID: ${dropId}\n`);
+
+  // Initialize drop with large inventory for stress testing
+  const result = initializeDrop(dropId, {
+    inventory: 100000, // Very large for breakpoint testing
+    registrationEnd: Date.now() + 60 * 60 * 1000, // 1 hour
+    purchaseWindow: 300,
+  });
+
+  if (!result.ok) {
+    console.log(`⚠️ Drop init: ${result.status} - continuing anyway`);
+  }
+
+  return { startTime: Date.now(), dropId };
 }
 
 export function handleSummary(data) {

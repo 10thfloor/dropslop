@@ -1,4 +1,5 @@
-import type { DropState, TicketPricing } from "./types.js";
+import crypto from "node:crypto";
+import type { DropState, TicketPricing, LotteryProof } from "./types.js";
 
 /**
  * Seeded random number generator using LCG
@@ -95,7 +96,8 @@ export function selectWinnersWeighted(
 }
 
 /**
- * Generate a deterministic seed from drop state
+ * Generate a secure, unpredictable lottery seed
+ * Includes server-side cryptographic randomness to prevent prediction
  */
 export function generateLotterySeed(dropState: DropState): string {
   const participantCount = Object.keys(dropState.participantTickets).length;
@@ -103,7 +105,12 @@ export function generateLotterySeed(dropState: DropState): string {
     (a, b) => a + b,
     0
   );
-  return `${dropState.config.dropId}:${participantCount}:${totalTickets}:${dropState.config.registrationEnd}`;
+  
+  // Add cryptographic randomness to prevent prediction
+  const serverRandom = crypto.randomBytes(32).toString("hex");
+  
+  // Combine deterministic data with server randomness
+  return `${dropState.config.dropId}:${participantCount}:${totalTickets}:${dropState.config.registrationEnd}:${serverRandom}`;
 }
 
 /**
@@ -183,4 +190,198 @@ export function getTotalTickets(
     (sum, tickets) => sum + tickets,
     0
   );
+}
+
+// ============================================================
+// Verifiable Lottery (Commit-Reveal) Functions
+// ============================================================
+
+/**
+ * Generate commitment for verifiable lottery
+ * Called BEFORE registration starts (at drop initialization)
+ * The secret is stored privately, commitment is published publicly
+ */
+export function generateLotteryCommitment(): {
+  secret: string;
+  commitment: string;
+} {
+  // Generate 32 bytes of cryptographic randomness
+  const secret = crypto.randomBytes(32).toString("hex");
+  
+  // Create commitment hash that will be published
+  const commitment = crypto
+    .createHash("sha256")
+    .update(secret)
+    .digest("hex");
+  
+  return { secret, commitment };
+}
+
+/**
+ * Verify that a secret matches a commitment
+ * Anyone can call this to verify the lottery wasn't rigged
+ */
+export function verifyCommitment(secret: string, commitment: string): boolean {
+  const computed = crypto
+    .createHash("sha256")
+    .update(secret)
+    .digest("hex");
+  return computed === commitment;
+}
+
+/**
+ * Create deterministic participant snapshot for seed generation
+ * Sorted by userId to ensure reproducibility regardless of insertion order
+ */
+export function createParticipantSnapshot(
+  participantTickets: Record<string, number>,
+  participantMultipliers?: Record<string, number>
+): string {
+  // Sort by userId to ensure deterministic ordering
+  const sorted = Object.entries(participantTickets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([userId, tickets]) => {
+      const multiplier = participantMultipliers?.[userId] ?? 1.0;
+      const effectiveTickets = Math.floor(tickets * multiplier);
+      return `${userId}:${effectiveTickets}`;
+    })
+    .join("|");
+  
+  return sorted;
+}
+
+/**
+ * Generate verifiable lottery seed
+ * Combines server secret with participant data
+ * This ensures the seed couldn't be manipulated after seeing registrations
+ */
+export function generateVerifiableSeed(
+  secret: string,
+  participantSnapshot: string
+): string {
+  return crypto
+    .createHash("sha256")
+    .update(secret + "|" + participantSnapshot)
+    .digest("hex");
+}
+
+/**
+ * Create full lottery proof for public verification
+ * Contains everything needed to independently verify the lottery results
+ */
+export function createLotteryProof(
+  secret: string,
+  commitment: string,
+  participantTickets: Record<string, number>,
+  participantMultipliers: Record<string, number>,
+  winners: string[],
+  backupWinners: string[]
+): LotteryProof {
+  const participantSnapshot = createParticipantSnapshot(
+    participantTickets,
+    participantMultipliers
+  );
+  const seed = generateVerifiableSeed(secret, participantSnapshot);
+  
+  return {
+    commitment,
+    secret,
+    participantSnapshot,
+    seed,
+    algorithm: "weighted-fisher-yates-v1",
+    timestamp: Date.now(),
+    winners,
+    backupWinners,
+  };
+}
+
+/**
+ * Weighted winner selection with loyalty multipliers
+ * Each ticket is multiplied by the user's loyalty multiplier
+ * Users can only win once (unique winners)
+ */
+export function selectWinnersWithMultipliers(
+  participantTickets: Record<string, number>,
+  participantMultipliers: Record<string, number>,
+  count: number,
+  seed: string
+): string[] {
+  const entries = Object.entries(participantTickets);
+
+  if (entries.length === 0) return [];
+
+  // If fewer or equal unique participants than prizes, everyone wins
+  if (entries.length <= count) {
+    return entries.map(([userId]) => userId);
+  }
+
+  // Expand participants by effective ticket count (tickets * multiplier) into a pool
+  const pool: string[] = [];
+  for (const [userId, tickets] of entries) {
+    const multiplier = participantMultipliers[userId] ?? 1.0;
+    const effectiveTickets = Math.floor(tickets * multiplier);
+    for (let i = 0; i < effectiveTickets; i++) {
+      pool.push(userId);
+    }
+  }
+
+  // Shuffle the pool
+  const shuffled = seededShuffle(pool, seed);
+
+  // Select unique winners
+  const winners: string[] = [];
+  const seen = new Set<string>();
+
+  for (const userId of shuffled) {
+    if (!seen.has(userId)) {
+      winners.push(userId);
+      seen.add(userId);
+      if (winners.length >= count) break;
+    }
+  }
+
+  return winners;
+}
+
+/**
+ * Calculate effective tickets after applying loyalty multiplier
+ */
+export function getEffectiveTickets(
+  tickets: number,
+  multiplier: number
+): number {
+  return Math.floor(tickets * multiplier);
+}
+
+/**
+ * Calculate win probability with loyalty multiplier
+ */
+export function calculateWinProbabilityWithMultiplier(
+  userTickets: number,
+  loyaltyMultiplier: number,
+  totalEffectiveTickets: number,
+  inventory: number,
+  participantCount: number
+): number {
+  if (totalEffectiveTickets === 0 || userTickets === 0) return 0;
+  if (inventory >= participantCount) return 1; // Everyone wins
+  
+  const effectiveTickets = Math.floor(userTickets * loyaltyMultiplier);
+  const poolShare = effectiveTickets / totalEffectiveTickets;
+  
+  // Approximate probability
+  return Math.min(1, poolShare * Math.min(inventory, participantCount));
+}
+
+/**
+ * Get total effective tickets (with multipliers applied)
+ */
+export function getTotalEffectiveTickets(
+  participantTickets: Record<string, number>,
+  participantMultipliers?: Record<string, number>
+): number {
+  return Object.entries(participantTickets).reduce((sum, [userId, tickets]) => {
+    const multiplier = participantMultipliers?.[userId] ?? 1.0;
+    return sum + Math.floor(tickets * multiplier);
+  }, 0);
 }

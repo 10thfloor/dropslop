@@ -3,7 +3,9 @@
  * Initialize a demo drop
  * Usage: npx tsx src/scripts/init-drop.ts
  */
+import { createLogger } from "../lib/logger.js";
 
+const logger = createLogger("init-drop");
 const RESTATE_URL = process.env.RESTATE_INGRESS_URL || "http://localhost:8080";
 
 async function initDrop() {
@@ -17,6 +19,8 @@ async function initDrop() {
     registrationStart: now - 1000, // Started 1 second ago
     registrationEnd: now + 300000, // Ends in 5 minutes
     purchaseWindow: 600, // 10 minutes to complete purchase
+    ticketPriceUnit: 1.0, // Required: Base price per additional ticket
+    maxTicketsPerUser: 10, // Required: Maximum tickets per user
   };
 
   console.log("Initializing drop with config:", config);
@@ -49,7 +53,7 @@ async function initDrop() {
 ╚═══════════════════════════════════════════════════════════╝
 `);
   } catch (error) {
-    console.error("Failed to initialize drop:", error);
+    logger.error({ err: error }, "Failed to initialize drop");
     console.log(`
 Make sure:
 1. Restate is running: docker-compose up -d
