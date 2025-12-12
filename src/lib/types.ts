@@ -11,6 +11,36 @@ export type UserStatus =
 
 export type LoyaltyTier = "bronze" | "silver" | "gold";
 
+// ============================================================================
+// Geo-Fence Types
+// ============================================================================
+
+export interface GeoCoordinates {
+  lat: number;
+  lng: number;
+}
+
+export interface GeoFenceRadius {
+  type: "radius";
+  center: GeoCoordinates;
+  radiusMeters: number;
+  name?: string; // e.g., "NYC Flagship Store"
+}
+
+export interface GeoFencePolygon {
+  type: "polygon";
+  vertices: GeoCoordinates[]; // Closed polygon (first = last)
+  name?: string;
+}
+
+export type GeoFence = GeoFenceRadius | GeoFencePolygon;
+
+export type GeoFenceMode = "exclusive" | "bonus";
+
+// ============================================================================
+// Drop Configuration
+// ============================================================================
+
 export interface DropConfig {
   dropId: string;
   inventory: number;
@@ -24,21 +54,51 @@ export interface DropConfig {
   backupMultiplier?: number; // e.g., 1.5 means 50% extra as backups (default: 1.5)
   // Verifiable lottery
   lotteryCommitment?: string; // SHA256 hash of secret, published at drop creation
+  // Geo-fence
+  geoFence?: GeoFence;
+  geoFenceMode?: GeoFenceMode; // "exclusive" or "bonus"
+  geoFenceBonusMultiplier?: number; // e.g., 1.5 for 50% more tickets in bonus mode
 }
 
 /**
  * Lottery proof for verifiable randomness
  * Published after lottery runs so anyone can verify results
+ *
+ * Uses Merkle tree for memory-efficient participant verification:
+ * - Only stores 32-byte root instead of full participant list
+ * - Individual users can request inclusion proofs via API
  */
 export interface LotteryProof {
   commitment: string; // SHA256(secret) - published before registration ends
   secret: string; // Revealed after lottery
-  participantSnapshot: string; // Deterministic snapshot of all participants
-  seed: string; // SHA256(secret + participantSnapshot)
-  algorithm: string; // "weighted-fisher-yates-v1"
+  participantMerkleRoot: string; // Merkle root of all participants (replaces full snapshot)
+  participantCount: number; // Number of participants for context
+  seed: string; // SHA256(secret + merkleRoot)
+  algorithm: string; // "weighted-fenwick-v2"
   timestamp: number; // When lottery ran
   winners: string[]; // Selected winners for verification
   backupWinners: string[]; // Backup winners
+}
+
+/**
+ * Merkle leaf data for a participant
+ */
+export interface MerkleLeafData {
+  userId: string;
+  effectiveTickets: number;
+  index: number;
+}
+
+/**
+ * Individual user's Merkle inclusion proof
+ * Allows a user to independently verify they were included in the lottery
+ */
+export interface UserInclusionProof {
+  leaf: MerkleLeafData;
+  leafHash: string;
+  proof: string[]; // Sibling hashes from leaf to root
+  merkleRoot: string;
+  verified: boolean; // Server-side verification result
 }
 
 export interface DropState {
@@ -55,6 +115,9 @@ export interface DropState {
   // Verifiable lottery
   lotterySecret?: string; // Revealed after lottery runs
   lotteryProof?: LotteryProof; // Full audit trail
+  // Merkle tree data for inclusion proofs (stored after lottery runs)
+  participantLeaves?: MerkleLeafData[]; // Sorted participant data for proof generation
+  participantLeafHashes?: string[]; // Leaf hashes for proof generation
 }
 
 export interface ParticipantState {
@@ -119,7 +182,9 @@ export interface SSEEvent {
   phase?: Phase;
   participantCount?: number;
   totalTickets?: number; // Total tickets in the pool
+  totalEffectiveTickets?: number; // Total effective tickets in the pool (with multipliers)
   inventory?: number;
+  initialInventory?: number; // Original inventory for display/metrics
   // Timing info (for synchronized countdown)
   registrationEnd?: number; // Unix timestamp ms
   purchaseEnd?: number; // Unix timestamp ms - when purchase window closes
@@ -137,6 +202,10 @@ export interface SSEEvent {
   promoted?: boolean; // True when backup is promoted to winner
   // Lottery verification
   lotteryCommitment?: string; // Published commitment hash
+  // Geo-fence
+  geoFence?: GeoFence;
+  geoFenceMode?: GeoFenceMode;
+  geoFenceBonusMultiplier?: number;
   // Loyalty info
   loyaltyTier?: LoyaltyTier;
   loyaltyMultiplier?: number;
@@ -146,6 +215,7 @@ export interface RegisterRequest {
   userId: string;
   tickets: number; // Total desired entries (1-10)
   botValidation: BotValidationRequest;
+  location?: GeoCoordinates; // User's location for geo-fenced drops
 }
 
 export interface PurchaseRequest {

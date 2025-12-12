@@ -4,7 +4,9 @@ import { logger } from "hono/logger";
 import { rateLimit } from "./middleware/rate-limit.js";
 import { getAllowedOrigins } from "../lib/cors-config.js";
 import dropRouter from "./routes/drop.js";
+import dropsRouter from "./routes/drops.js";
 import powRouter from "./routes/pow.js";
+import queueRouter from "./routes/queue.js";
 
 const app = new Hono();
 
@@ -26,7 +28,9 @@ app.use(
 
 // API Routes
 app.route("/api/drop", dropRouter);
+app.route("/api/drops", dropsRouter);
 app.route("/api/pow", powRouter);
+app.route("/api/queue", queueRouter);
 
 // Health check
 app.get("/health", (c) => c.json({ status: "ok" }));

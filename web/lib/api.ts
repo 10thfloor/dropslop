@@ -4,6 +4,8 @@ import type {
   UserState,
   RegisterResult,
   RolloverBalance,
+  GeoCoordinates,
+  QueueBehaviorSignals,
 } from "./types";
 
 const API_BASE = "/api";
@@ -29,17 +31,30 @@ export async function getPowChallenge(): Promise<{
 /**
  * Register for a drop with ticket count
  * Rollover entries are automatically applied from user's balance
+ * Location is optional but required for exclusive geo-fenced drops
+ *
+ * When queue is enabled, queueToken and behaviorSignals are required
  */
 export async function registerForDrop(
   dropId: string,
   userId: string,
   botValidation: BotValidation,
-  tickets = 1
+  tickets = 1,
+  location?: GeoCoordinates,
+  queueToken?: string,
+  behaviorSignals?: QueueBehaviorSignals
 ): Promise<RegisterResult> {
   const res = await fetch(`${API_BASE}/drop/${dropId}/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, tickets, botValidation }),
+    body: JSON.stringify({
+      userId,
+      tickets,
+      botValidation,
+      location,
+      queueToken,
+      behaviorSignals,
+    }),
   });
 
   if (!res.ok) {

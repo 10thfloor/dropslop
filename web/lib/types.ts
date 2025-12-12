@@ -1,3 +1,12 @@
+import type {
+  Phase,
+  UserStatus,
+  LoyaltyTier,
+  TicketPricing,
+  GeoFence,
+  GeoFenceMode,
+} from "../../shared/types";
+
 // Re-export shared types
 export type {
   Phase,
@@ -6,6 +15,19 @@ export type {
   TicketPricing,
   BotValidation,
   SSEEvent,
+  // Geo-fence types
+  GeoCoordinates,
+  GeoFenceRadius,
+  GeoFencePolygon,
+  GeoFence,
+  GeoFenceMode,
+  // Queue types
+  QueueTokenStatus,
+  QueueToken,
+  QueueBehaviorSignals,
+  QueueSSEEvent,
+  QueueJoinResponse,
+  QueueStatusResponse,
 } from "../../shared/types";
 
 export interface DropState {
@@ -21,6 +43,10 @@ export interface DropState {
   purchaseEnd?: number; // Server-authoritative timestamp for purchase window
   ticketPricing: TicketPricing;
   lotteryCommitment?: string; // For verifiable lottery
+  // Geo-fence info
+  geoFence?: GeoFence;
+  geoFenceMode?: GeoFenceMode;
+  geoFenceBonusMultiplier?: number;
 }
 
 export interface UserState {
@@ -56,6 +82,9 @@ export interface RegisterResult {
   paidEntries: number;
   loyaltyTier: string;
   loyaltyMultiplier: number;
+  // Geo-fence info
+  geoBonus: number;
+  inGeoZone: boolean;
 }
 
 export interface RolloverBalance {
@@ -75,11 +104,33 @@ export interface LotteryProof {
   proof?: {
     commitment: string;
     secret: string;
-    participantSnapshot: string;
+    participantMerkleRoot: string;
+    participantCount: number;
     seed: string;
     algorithm: string;
     timestamp: number;
     winners: string[];
     backupWinners: string[];
   };
+}
+
+/**
+ * Merkle leaf data for a participant
+ */
+export interface MerkleLeafData {
+  userId: string;
+  effectiveTickets: number;
+  index: number;
+}
+
+/**
+ * Individual user's Merkle inclusion proof
+ * Allows a user to independently verify they were included in the lottery
+ */
+export interface UserInclusionProof {
+  leaf: MerkleLeafData;
+  leafHash: string;
+  proof: string[]; // Sibling hashes from leaf to root
+  merkleRoot: string;
+  verified: boolean;
 }

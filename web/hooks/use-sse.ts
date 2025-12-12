@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { DropState, UserState, SSEEvent, TicketPricing } from "@/lib/types";
+import type {
+  DropState,
+  UserState,
+  SSEEvent,
+  TicketPricing,
+} from "@/lib/types";
 
 interface SSEConnectedEvent {
   type: "connected";
@@ -15,6 +20,10 @@ interface SSEConnectedEvent {
   serverTime?: number;
   ticketPricing?: TicketPricing;
   lotteryCommitment?: string;
+  // Geo-fence info
+  geoFence?: DropState["geoFence"];
+  geoFenceMode?: DropState["geoFenceMode"];
+  geoFenceBonusMultiplier?: number;
 }
 
 interface UseSSEOptions {
@@ -119,7 +128,7 @@ export function useSSE({
 
           setDropState((prev) => ({
             ...prev,
-            phase: data.phase,
+            phase: data.phase ?? prev.phase,
             inventory: data.inventory ?? prev.inventory,
             participantCount: data.participantCount ?? prev.participantCount,
             totalTickets: data.totalTickets || 0,
@@ -128,6 +137,10 @@ export function useSSE({
             purchaseEnd: data.purchaseEnd,
             ticketPricing: data.ticketPricing || prev.ticketPricing,
             lotteryCommitment: data.lotteryCommitment,
+            // Geo-fence info
+            geoFence: data.geoFence,
+            geoFenceMode: data.geoFenceMode,
+            geoFenceBonusMultiplier: data.geoFenceBonusMultiplier,
           }));
         }
       } catch (err) {
@@ -144,13 +157,18 @@ export function useSSE({
 
           setDropState((prev) => ({
             ...prev,
-            phase: data.phase,
-            inventory: data.inventory,
-            participantCount: data.participantCount,
+            phase: data.phase ?? prev.phase,
+            inventory: data.inventory ?? prev.inventory,
+            participantCount: data.participantCount ?? prev.participantCount,
             totalTickets: data.totalTickets || 0,
-            registrationEnd: data.registrationEnd,
-            purchaseEnd: data.purchaseEnd,
+            registrationEnd: data.registrationEnd ?? prev.registrationEnd,
+            purchaseEnd: data.purchaseEnd ?? prev.purchaseEnd,
             lotteryCommitment: data.lotteryCommitment || prev.lotteryCommitment,
+            // Preserve geo-fence from initial state (doesn't change)
+            geoFence: data.geoFence || prev.geoFence,
+            geoFenceMode: data.geoFenceMode || prev.geoFenceMode,
+            geoFenceBonusMultiplier:
+              data.geoFenceBonusMultiplier ?? prev.geoFenceBonusMultiplier,
           }));
         }
       } catch (err) {
@@ -164,7 +182,7 @@ export function useSSE({
         if (data.type === "user") {
           setUserState((prev) => ({
             ...prev,
-            status: data.status,
+            status: data.status ?? prev.status,
             tickets: data.tickets || 0,
             effectiveTickets: data.effectiveTickets,
             queuePosition: data.position,

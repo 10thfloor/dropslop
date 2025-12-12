@@ -12,9 +12,13 @@ import { TicketSelector } from "@/components/ticket-selector";
 import { RolloverCelebration } from "@/components/rollover-celebration";
 import { PurchaseCelebration } from "@/components/purchase-celebration";
 import { LotteryProofDisplay } from "@/components/lottery-proof";
+import { GeoGate } from "@/components/geo-gate";
+import { QueueWaitingRoom } from "@/components/queue-waiting-room";
 import { useSSE } from "@/hooks/use-sse";
 import { useCountdown } from "@/hooks/use-countdown";
 import { useUserId } from "@/hooks/use-user-id";
+import { useGeolocation, type GeoCoordinates } from "@/hooks/use-geolocation";
+import { useQueue } from "@/hooks/use-queue";
 import {
   registerForDrop,
   getPowChallenge,
@@ -23,6 +27,7 @@ import {
   calculateCostWithRollover,
 } from "@/lib/api";
 import { solvePow, generateFingerprint } from "@/lib/pow-solver";
+import { isInsideGeoFence } from "@/lib/geo";
 
 const PRODUCT_NAME = "ALPHA SV JACKET";
 
@@ -61,6 +66,12 @@ export default function DropPage() {
   const [actionMessage, setActionMessage] = useState<string | undefined>();
   const [resultPosition, setResultPosition] = useState<number | undefined>();
 
+  // Stable fingerprint for queue + botValidation (must match)
+  const [fingerprint, setFingerprint] = useState<string | null>(null);
+  useEffect(() => {
+    setFingerprint(generateFingerprint());
+  }, []);
+
   // Ticket selection state
   const [selectedTickets, setSelectedTickets] = useState(1);
 
@@ -70,6 +81,27 @@ export default function DropPage() {
 
   // Purchase celebration modal state
   const [showPurchaseCelebration, setShowPurchaseCelebration] = useState(false);
+
+  // Geolocation for geo-fenced drops
+  const geolocation = useGeolocation();
+  const [userLocation, setUserLocation] = useState<GeoCoordinates | null>(null);
+  const [inGeoZone, setInGeoZone] = useState(false);
+
+  // Geo-fence state from drop
+  const hasGeoFence = !!dropState.geoFence;
+  const isExclusiveGeoFence = dropState.geoFenceMode === "exclusive";
+  const geoBonus = dropState.geoFenceBonusMultiplier ?? 1.5;
+
+  // Handle location obtained from GeoGate
+  const handleLocationObtained = (location: GeoCoordinates, isInZone: boolean) => {
+    setUserLocation(location);
+    setInGeoZone(isInZone);
+  };
+
+  // Check if user can register (geo-fence requirements met)
+  const geoRequirementMet = !hasGeoFence || 
+    !isExclusiveGeoFence || 
+    (userLocation && dropState.geoFence && isInsideGeoFence(userLocation, dropState.geoFence));
 
   // Get rollover balance from SSE user state
   const rolloverBalance = userState.rolloverBalance || 0;
@@ -94,6 +126,16 @@ export default function DropPage() {
   const registrationOpen =
     dropState.phase === "registration" && !countdown.isExpired;
 
+  // Queue (token sequencing) - join early, wait until ready before allowing registration
+  const queue = useQueue({
+    dropId,
+    fingerprint,
+    enabled: registrationOpen && userState.status === "not_registered",
+    autoJoin: true,
+  });
+
+  const queueRequirementMet = !queue.queueEnabled || queue.isReady;
+
   // Show rollover celebration when user becomes a loser with paid entries
   useEffect(() => {
     if (userState.status === "loser" && paidEntriesFromRegistration > 0) {
@@ -117,6 +159,13 @@ export default function DropPage() {
   const handleRegister = useCallback(async () => {
     if (!userId || !dropId) return;
 
+    // If queue is enabled, user must be "ready" and have a token
+    if (!queueRequirementMet || (queue.queueEnabled && !queue.token)) {
+      setActionStep("error");
+      setActionMessage("Queue token required — wait for your turn in the queue.");
+      return;
+    }
+
     setLoading(true);
     setActionStep("challenge");
     setActionProgress(0);
@@ -131,7 +180,8 @@ export default function DropPage() {
       });
       setActionProgress(100);
 
-      const fingerprint = generateFingerprint();
+      // Use the same fingerprint that was used to join the queue
+      const fp = fingerprint ?? generateFingerprint();
 
       setActionStep("registering");
       const pageLoadTime =
@@ -143,13 +193,16 @@ export default function DropPage() {
         dropId,
         userId,
         {
-          fingerprint,
+          fingerprint: fp,
           fingerprintConfidence: 90,
           timingMs,
           powSolution: solution,
           powChallenge: challenge,
         },
-        selectedTickets
+        selectedTickets,
+        userLocation ?? undefined, // Pass location for geo-fenced drops
+        queue.token ?? undefined,
+        queue.behaviorSignals
       );
 
       setActionStep("success");
@@ -183,6 +236,27 @@ export default function DropPage() {
       );
       setResultPosition(result.position);
     } catch (err) {
+      // If queue token became invalid/expired, automatically re-join queue so the user
+      // can try again without getting stuck.
+      if (
+        err instanceof Error &&
+        (err.message.includes("Queue token required") ||
+          err.message.includes("Queue token not ready") ||
+          err.message.includes("Invalid or expired queue token") ||
+          err.message.includes("Queue token expired"))
+      ) {
+        setActionStep("error");
+        setActionMessage(
+          "Your queue token is no longer valid. Rejoining the queue…"
+        );
+        try {
+          await queue.joinQueue();
+        } catch {
+          // ignore - queue hook already exposes its own error state
+        }
+        return;
+      }
+
       setActionStep("error");
       setActionMessage(
         err instanceof Error ? err.message : "Registration failed"
@@ -190,7 +264,17 @@ export default function DropPage() {
     } finally {
       setLoading(false);
     }
-  }, [userId, dropId, selectedTickets]);
+  }, [
+    userId,
+    dropId,
+    selectedTickets,
+    userLocation,
+    fingerprint,
+    queueRequirementMet,
+    queue.queueEnabled,
+    queue.token,
+    queue.behaviorSignals,
+  ]);
 
   const handlePurchase = useCallback(async () => {
     if (!userId || !dropId) return;
@@ -274,6 +358,15 @@ export default function DropPage() {
 
     switch (userState.status) {
       case "not_registered": {
+        // Check geo-fence requirements for exclusive drops
+        if (hasGeoFence && isExclusiveGeoFence && !geoRequirementMet) {
+          return {
+            text: "LOCATION REQUIRED",
+            disabled: true,
+            action: () => {},
+          };
+        }
+
         // Show cost after rollover is applied
         let buttonText: string;
         if (ticketCost > 0) {
@@ -283,9 +376,15 @@ export default function DropPage() {
         } else {
           buttonText = "ENTER THE DROP — FREE";
         }
+
+        // Add geo bonus indicator if applicable
+        if (hasGeoFence && !isExclusiveGeoFence && inGeoZone) {
+          buttonText += ` (${geoBonus}x GEO BONUS)`;
+        }
+
         return {
           text: buttonText,
-          disabled: !registrationOpen,
+          disabled: !registrationOpen || !queueRequirementMet,
           action: handleRegister,
         };
       }
@@ -353,6 +452,12 @@ export default function DropPage() {
   const showTicketSelector =
     userState.status === "not_registered" && registrationOpen;
 
+  // Show geo-gate for geo-fenced drops during registration
+  const showGeoGate =
+    hasGeoFence &&
+    userState.status === "not_registered" &&
+    dropState.phase === "registration";
+
   return (
     <div className="min-h-screen bg-background">
       <Header connected={connected} phase={dropState.phase} />
@@ -396,6 +501,7 @@ export default function DropPage() {
               phase={dropState.phase}
               commitment={dropState.lotteryCommitment}
               dropId={dropId}
+              userId={userId ?? undefined}
             />
 
             {/* Phase Display */}
@@ -447,6 +553,32 @@ export default function DropPage() {
             backupPosition={userState.backupPosition}
             promoted={userState.promoted}
           />
+
+          {/* Queue waiting room (only shows when queue is enabled) */}
+          {registrationOpen && userState.status === "not_registered" && (
+            <QueueWaitingRoom
+              status={queue.status}
+              position={queue.position}
+              estimatedWaitSeconds={queue.estimatedWaitSeconds}
+              expiresAt={queue.expiresAt}
+              error={queue.error}
+              queueEnabled={queue.queueEnabled}
+              isPowSolving={actionStep === "solving"}
+              powProgress={actionProgress}
+              onRetry={queue.joinQueue}
+            />
+          )}
+
+          {/* Geo-Fence Gate */}
+          {showGeoGate && dropState.geoFence && dropState.geoFenceMode && (
+            <GeoGate
+              geoFence={dropState.geoFence}
+              geoFenceMode={dropState.geoFenceMode}
+              bonusMultiplier={geoBonus}
+              geolocation={geolocation}
+              onLocationObtained={handleLocationObtained}
+            />
+          )}
 
           {/* Ticket Selector - use server-provided pricing */}
           {showTicketSelector && (

@@ -34,7 +34,7 @@ export const server = {
   /** SSE server port */
   ssePort: envNumber("SSE_PORT", 3004),
   /** Restate ingress port */
-  restatePort: envNumber("RESTATE_PORT", 8081),
+  restatePort: envNumber("RESTATE_PORT", 9080),
   /** Log level */
   logLevel: envString("LOG_LEVEL", "info"),
   /** Node environment */
@@ -56,6 +56,8 @@ export const nats = {
   buckets: {
     challenges: "pow_challenges",
     rateLimits: "rate_limits",
+    queueTokens: "queue_tokens",
+    dropsIndex: "drops_index",
   },
   /** KV TTLs (in milliseconds) */
   ttl: {
@@ -63,11 +65,15 @@ export const nats = {
     challenge: 5 * 60 * 1000,
     /** Rate limit TTL - 2 minutes (2x max window for safe cleanup of window-based keys) */
     rateLimit: 2 * 60 * 1000,
+    /** Queue token TTL - 15 minutes (slightly longer than maxQueueAge for safety) */
+    queueToken: 15 * 60 * 1000,
   },
   /** KV max bucket sizes (in bytes) */
   maxBytes: {
     challenges: 10 * 1024 * 1024, // 10MB
     rateLimits: 50 * 1024 * 1024, // 50MB
+    queueTokens: 100 * 1024 * 1024, // 100MB
+    dropsIndex: 10 * 1024 * 1024, // 10MB (drop metadata only)
   },
 } as const;
 
@@ -219,6 +225,46 @@ export const fingerprint = {
 } as const;
 
 // ============================================================
+// Geo-Fence Configuration
+// ============================================================
+
+export const geo = {
+  /** Default bonus multiplier for users inside geo-fence (bonus mode) */
+  defaultBonusMultiplier: 1.5, // 50% bonus
+  /** Maximum allowed radius in meters */
+  maxRadiusMeters: 50000, // 50km
+  /** Minimum allowed radius in meters */
+  minRadiusMeters: 100, // 100m
+} as const;
+
+// ============================================================
+// Queue (Token Sequencing) Configuration
+// ============================================================
+
+export const queue = {
+  /** Tokens admitted per second (rate-based admission) */
+  admissionRatePerSecond: envNumber("QUEUE_ADMISSION_RATE", 20),
+  /** Max concurrent "ready" users (cap for hybrid admission) */
+  maxConcurrentReady: envNumber("QUEUE_MAX_CONCURRENT", 50),
+  /** Seconds user has to register after becoming ready */
+  readyWindowSeconds: envNumber("QUEUE_READY_WINDOW", 30),
+  /** Max queue age before token expires (minutes) */
+  maxQueueAgeMinutes: envNumber("QUEUE_MAX_AGE", 10),
+  /** Max tokens per fingerprint (prevents multi-account bots) */
+  maxTokensPerFingerprint: 1,
+  /** Max tokens per IP (allow some NAT sharing) */
+  maxTokensPerIP: 3,
+  /** Behavioral score weight in trust calculation (0.0-1.0) */
+  behaviorWeight: 0.2,
+  /** Minimum behavioral score to pass (0-100) */
+  minBehaviorScore: envNumber("QUEUE_MIN_BEHAVIOR_SCORE", 30),
+  /** Admission tick interval (ms) - how often to admit next batch */
+  admissionTickMs: envNumber("QUEUE_ADMISSION_TICK_MS", 1000),
+  /** Enable queue defense (can be disabled for testing) */
+  enabled: envBoolean("QUEUE_ENABLED", true),
+} as const;
+
+// ============================================================
 // Maintenance Configuration
 // ============================================================
 
@@ -245,6 +291,8 @@ export const config = {
   pow,
   security,
   fingerprint,
+  geo,
+  queue,
   maintenance,
 } as const;
 

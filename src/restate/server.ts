@@ -3,8 +3,15 @@ import { dropObject } from "./drop.js";
 import { participantObject } from "./participant.js";
 import { userRolloverObject } from "./user-rollover.js";
 import { userLoyaltyObject } from "./user-loyalty.js";
+import { queueAdmissionObject } from "./queue-admission.js";
 
 // Create Restate server with services
 restate.serve({
-  services: [dropObject, participantObject, userRolloverObject, userLoyaltyObject],
+  services: [
+    dropObject,
+    participantObject,
+    userRolloverObject,
+    userLoyaltyObject,
+    queueAdmissionObject,
+  ],
 });

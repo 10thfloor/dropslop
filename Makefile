@@ -2,7 +2,8 @@
 # ================================
 
 .PHONY: help install start stop backend backend-test frontend restate-up restate-down restate-restart \
-        register init-drop reset reset-full status logs lottery lottery-proof promote-backup clean setup nats-up nats-logs _ensure-infra \
+        register init-drop init-drop-geo init-drop-nyc init-drop-la test-geo-inside test-geo-outside \
+        reset reset-full status logs lottery lottery-proof promote-backup clean setup nats-up nats-logs _ensure-infra \
         test-browser k6-spike k6-soak k6-lottery k6-bot k6-breakpoint k6-purchase k6-rollover k6-multi k6-sse test-all
 
 # Colors for output
@@ -19,6 +20,13 @@ DROP_ID ?= demo-drop-$(shell date +%s)
 INVENTORY ?= 10
 REGISTRATION_MINUTES ?= 5
 BACKUP_MULTIPLIER ?= 1.5
+
+# Geo-fence configuration (optional)
+GEO_LAT ?= 
+GEO_LNG ?= 
+GEO_RADIUS ?= 1000
+GEO_MODE ?= exclusive
+GEO_BONUS ?= 1.5
 
 # Default target
 help:
@@ -48,6 +56,13 @@ help:
 	@echo "  make lottery-proof  Show verifiable lottery proof"
 	@echo "  make promote-backup Manually promote next backup winner"
 	@echo "  make status         Show drop status"
+	@echo ""
+	@echo "$(BOLD)Geo-Fenced Drops:$(RESET)"
+	@echo "  make init-drop-geo  Initialize geo-fenced drop (requires GEO_LAT, GEO_LNG)"
+	@echo "  make init-drop-nyc  Example: NYC Times Square (exclusive, 500m)"
+	@echo "  make init-drop-la   Example: LA Hollywood (bonus, 1km)"
+	@echo "  make test-geo-inside  Test registration from inside geo-fence"
+	@echo "  make test-geo-outside Test registration from outside geo-fence"
 	@echo ""
 	@echo "$(BOLD)Reset:$(RESET)"
 	@echo "  make reset          Quick reset (restart Restate + re-register)"
@@ -208,7 +223,7 @@ register:
 	@echo "$(CYAN)Registering worker with Restate...$(RESET)"
 	@curl -s localhost:9070/deployments \
 		-H 'content-type: application/json' \
-		-d '{"uri":"http://host.docker.internal:9080"}' > /dev/null 2>&1 || true
+		-d '{"uri":"http://host.docker.internal:9080"}' > /dev/null
 	@echo "$(GREEN)✓ Worker registered$(RESET)"
 
 init-drop:
@@ -217,7 +232,7 @@ init-drop:
 	END=$$((NOW + $(REGISTRATION_MINUTES) * 60000)); \
 	curl -s localhost:8080/Drop/$(DROP_ID)/initialize \
 		-H 'content-type: application/json' \
-		-d "{\"dropId\":\"$(DROP_ID)\",\"inventory\":$(INVENTORY),\"registrationStart\":$$((NOW - 1000)),\"registrationEnd\":$$END,\"purchaseWindow\":300,\"ticketPriceUnit\":1.0,\"maxTicketsPerUser\":10,\"backupMultiplier\":$(BACKUP_MULTIPLIER)}" > /dev/null 2>&1 || true
+		-d "{\"dropId\":\"$(DROP_ID)\",\"inventory\":$(INVENTORY),\"registrationStart\":$$((NOW - 1000)),\"registrationEnd\":$$END,\"purchaseWindow\":300,\"ticketPriceUnit\":1.0,\"maxTicketsPerUser\":10,\"backupMultiplier\":$(BACKUP_MULTIPLIER)}" > /dev/null
 	@echo "$(GREEN)✓ Drop initialized: $(DROP_ID) ($(INVENTORY) items, $(REGISTRATION_MINUTES) min, $(BACKUP_MULTIPLIER)x backups)$(RESET)"
 
 lottery:
@@ -247,6 +262,60 @@ promote-backup:
 		-d '{}'
 	@echo ""
 	@echo "$(GREEN)✓ Backup promotion triggered$(RESET)"
+
+# =============================================================================
+# Geo-Fenced Drops
+# =============================================================================
+
+# Initialize a geo-fenced drop (radius mode)
+# Usage: make init-drop-geo GEO_LAT=40.7128 GEO_LNG=-74.0060 GEO_RADIUS=500 GEO_MODE=exclusive
+init-drop-geo:
+	@if [ -z "$(GEO_LAT)" ] || [ -z "$(GEO_LNG)" ]; then \
+		echo "$(RED)Error: GEO_LAT and GEO_LNG are required$(RESET)"; \
+		echo "Usage: make init-drop-geo GEO_LAT=40.7128 GEO_LNG=-74.0060"; \
+		exit 1; \
+	fi
+	@echo "$(CYAN)Initializing geo-fenced drop: $(DROP_ID)$(RESET)"
+	@echo "  Location: $(GEO_LAT), $(GEO_LNG)"
+	@echo "  Radius: $(GEO_RADIUS)m"
+	@echo "  Mode: $(GEO_MODE)"
+	@NOW=$$(date +%s)000; \
+	END=$$((NOW + $(REGISTRATION_MINUTES) * 60000)); \
+	curl -s localhost:8080/Drop/$(DROP_ID)/initialize \
+		-H 'content-type: application/json' \
+		-d "{\"dropId\":\"$(DROP_ID)\",\"inventory\":$(INVENTORY),\"registrationStart\":$$((NOW - 1000)),\"registrationEnd\":$$END,\"purchaseWindow\":300,\"ticketPriceUnit\":1.0,\"maxTicketsPerUser\":10,\"backupMultiplier\":$(BACKUP_MULTIPLIER),\"geoFence\":{\"type\":\"radius\",\"center\":{\"lat\":$(GEO_LAT),\"lng\":$(GEO_LNG)},\"radiusMeters\":$(GEO_RADIUS),\"name\":\"Drop Zone\"},\"geoFenceMode\":\"$(GEO_MODE)\",\"geoFenceBonusMultiplier\":$(GEO_BONUS)}" > /dev/null 2>&1 || true
+	@echo "$(GREEN)✓ Geo-fenced drop initialized: $(DROP_ID)$(RESET)"
+	@echo "  $(YELLOW)$(GEO_MODE) mode - $(GEO_RADIUS)m radius$(RESET)"
+
+# Test registration from inside geo-fence
+# Usage: make test-geo-inside DROP_ID=my-drop USER_ID=test-user GEO_LAT=40.7128 GEO_LNG=-74.0060
+USER_ID ?= test-user-$(shell date +%s)
+test-geo-inside:
+	@if [ -z "$(GEO_LAT)" ] || [ -z "$(GEO_LNG)" ]; then \
+		echo "$(RED)Error: GEO_LAT and GEO_LNG are required$(RESET)"; \
+		exit 1; \
+	fi
+	@echo "$(CYAN)Testing registration from inside geo-fence...$(RESET)"
+	@curl -s localhost:3003/api/drop/$(DROP_ID)/register \
+		-H 'content-type: application/json' \
+		-d "{\"userId\":\"$(USER_ID)\",\"tickets\":1,\"botValidation\":{\"fingerprint\":\"test\",\"fingerprintConfidence\":90,\"timingMs\":5000,\"powSolution\":\"test\",\"powChallenge\":\"test\"},\"location\":{\"lat\":$(GEO_LAT),\"lng\":$(GEO_LNG)}}" | python3 -m json.tool
+	@echo ""
+
+# Test registration from outside geo-fence (should fail for exclusive mode)
+test-geo-outside:
+	@echo "$(CYAN)Testing registration from outside geo-fence...$(RESET)"
+	@curl -s localhost:3003/api/drop/$(DROP_ID)/register \
+		-H 'content-type: application/json' \
+		-d "{\"userId\":\"outside-user-$(shell date +%s)\",\"tickets\":1,\"botValidation\":{\"fingerprint\":\"test\",\"fingerprintConfidence\":90,\"timingMs\":5000,\"powSolution\":\"test\",\"powChallenge\":\"test\"},\"location\":{\"lat\":0,\"lng\":0}}" | python3 -m json.tool
+	@echo ""
+
+# NYC Times Square example
+init-drop-nyc:
+	@$(MAKE) init-drop-geo DROP_ID=nyc-drop-$(shell date +%s) GEO_LAT=40.7580 GEO_LNG=-73.9855 GEO_RADIUS=500 GEO_MODE=exclusive
+
+# LA Hollywood example
+init-drop-la:
+	@$(MAKE) init-drop-geo DROP_ID=la-drop-$(shell date +%s) GEO_LAT=34.0928 GEO_LNG=-118.3287 GEO_RADIUS=1000 GEO_MODE=bonus
 
 status:
 	@echo "$(CYAN)Drop Status: $(DROP_ID)$(RESET)"

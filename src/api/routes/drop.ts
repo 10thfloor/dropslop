@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { botGuard } from "../middleware/bot-guard.js";
+import { queueGuard } from "../middleware/queue-guard.js";
 import { strictRateLimit } from "../middleware/rate-limit.js";
 import {
   callRestate,
@@ -21,6 +22,9 @@ import { z } from "zod";
 type Variables = {
   trustScore: number;
   parsedBody: Record<string, unknown>;
+  queueToken: string;
+  queueTokenValid: boolean;
+  behaviorScore: number;
 };
 
 const dropRouter = new Hono<{ Variables: Variables }>();
@@ -43,9 +47,14 @@ function toHttpErrorCode(statusCode: number): HttpErrorCode {
 /**
  * Register for a drop (with ticket count)
  * Rollover entries are automatically applied from user's balance
- * Protected by rate limiting and bot validation middleware
+ * Protected by rate limiting, queue guard, and bot validation middleware
+ *
+ * Middleware chain:
+ * 1. strictRateLimit - IP-based rate limiting
+ * 2. queueGuard - Validates queue token and behavioral signals
+ * 3. botGuard - Validates fingerprint, PoW, and timing
  */
-dropRouter.post("/:id/register", strictRateLimit, botGuard, async (c) => {
+dropRouter.post("/:id/register", strictRateLimit, botGuard, queueGuard, async (c) => {
   try {
     // Validate drop ID
     const dropIdResult = dropIdSchema.safeParse(c.req.param("id"));
@@ -332,6 +341,56 @@ dropRouter.get("/:id/lottery-proof", async (c) => {
           error instanceof Error
             ? error.message
             : "Failed to get lottery proof",
+      },
+      500
+    );
+  }
+});
+
+/**
+ * Get Merkle inclusion proof for a specific user
+ * Allows users to verify they were included in the lottery
+ * Returns a cryptographic proof that can be independently verified
+ */
+dropRouter.get("/:id/inclusion-proof/:userId", async (c) => {
+  try {
+    // Validate drop ID
+    const dropIdResult = dropIdSchema.safeParse(c.req.param("id"));
+    if (!dropIdResult.success) {
+      return c.json(formatZodError(dropIdResult.error), 400);
+    }
+    const dropId = dropIdResult.data;
+
+    // Validate user ID
+    const userIdResult = userIdSchema.safeParse(c.req.param("userId"));
+    if (!userIdResult.success) {
+      return c.json(formatZodError(userIdResult.error), 400);
+    }
+    const userId = userIdResult.data;
+
+    const result = await callRestate(
+      "Drop",
+      dropId,
+      "getInclusionProof",
+      { userId },
+      { timeoutMs: RESTATE_TIMEOUT }
+    );
+
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof RestateTimeoutError) {
+      return c.json({ error: "Inclusion proof request timed out" }, 504);
+    }
+    if (error instanceof RestateError) {
+      return c.json({ error: error.message }, toHttpErrorCode(error.statusCode));
+    }
+    console.error("Inclusion proof error:", error);
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to get inclusion proof",
       },
       500
     );

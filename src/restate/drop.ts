@@ -6,6 +6,8 @@ import type {
   RegisterRequest,
   TicketPricing,
   LotteryProof,
+  GeoFence,
+  GeoFenceMode,
 } from "../lib/types.js";
 import {
   selectWinnersWeighted,
@@ -15,11 +17,17 @@ import {
   getTotalEffectiveTickets,
   getTicketPricing,
   generateLotteryCommitment,
-  createParticipantSnapshot,
-  generateVerifiableSeed,
   createLotteryProof,
 } from "../lib/lottery.js";
+import {
+  MerkleTree,
+  generateVerifiableSeedFromMerkle,
+  verifyMerkleProof,
+} from "../lib/merkle.js";
+import type { UserInclusionProof } from "../lib/types.js";
+import { isInsideGeoFence, validateGeoFence } from "../lib/geo.js";
 import { publishDropState } from "../lib/nats.js";
+import { deleteDropIndex, upsertDropIndex } from "../lib/nats-kv.js";
 import { userRolloverObject } from "./user-rollover.js";
 import { userLoyaltyObject } from "./user-loyalty.js";
 import { participantObject } from "./participant.js";
@@ -82,7 +90,11 @@ export const dropObject = restate.object({
     initialize: async (
       ctx: restate.ObjectContext,
       dropConfig: DropConfig
-    ): Promise<{ success: boolean; dropId: string; lotteryCommitment?: string }> => {
+    ): Promise<{
+      success: boolean;
+      dropId: string;
+      lotteryCommitment?: string;
+    }> => {
       const existing = await ctx.get<DropState>(STATE_KEY);
 
       if (existing) {
@@ -93,20 +105,38 @@ export const dropObject = restate.object({
         };
       }
 
+      // Validate geo-fence configuration if provided
+      if (dropConfig.geoFence) {
+        const geoError = validateGeoFence(
+          dropConfig.geoFence,
+          config.geo.minRadiusMeters,
+          config.geo.maxRadiusMeters
+        );
+        if (geoError) {
+          throw new restate.TerminalError(`Invalid geo-fence: ${geoError}`, {
+            errorCode: 400,
+          });
+        }
+      }
+
       // Generate lottery commitment for verifiable randomness
       // Secret is stored, commitment is published
-      const { secret, commitment } = await ctx.run(
-        "generate_commitment",
-        () => generateLotteryCommitment()
+      const { secret, commitment } = await ctx.run("generate_commitment", () =>
+        generateLotteryCommitment()
       );
 
-      // Apply defaults for ticket pricing and backup
+      // Apply defaults for ticket pricing, backup, and geo-fence
       const fullConfig: DropConfig = {
         ...dropConfig,
         ticketPriceUnit: dropConfig.ticketPriceUnit ?? DEFAULT_PRICE_UNIT,
         maxTicketsPerUser: dropConfig.maxTicketsPerUser ?? DEFAULT_MAX_TICKETS,
-        backupMultiplier: dropConfig.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER,
+        backupMultiplier:
+          dropConfig.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER,
         lotteryCommitment: commitment,
+        // Geo-fence defaults
+        geoFenceBonusMultiplier:
+          dropConfig.geoFenceBonusMultiplier ??
+          config.geo.defaultBonusMultiplier,
       };
 
       const state: DropState = {
@@ -123,6 +153,20 @@ export const dropObject = restate.object({
       };
 
       await ctx.set(STATE_KEY, state);
+
+      // Record this drop in the drop index (for homepage listing)
+      await ctx.run("drops_index_upsert", async () => {
+        await upsertDropIndex({
+          dropId: fullConfig.dropId,
+          createdAt: Date.now(),
+          registrationStart: fullConfig.registrationStart,
+          registrationEnd: fullConfig.registrationEnd,
+          purchaseWindow: fullConfig.purchaseWindow,
+        });
+      });
+
+      // Publish initial drop state so active drops SSE updates immediately
+      await publishDropStateEffect(ctx, fullConfig.dropId, state);
 
       // Schedule the lottery to run automatically when registration ends
       const now = await getCurrentTime(ctx);
@@ -141,7 +185,11 @@ export const dropObject = restate.object({
         );
       }
 
-      return { success: true, dropId: dropConfig.dropId, lotteryCommitment: commitment };
+      return {
+        success: true,
+        dropId: dropConfig.dropId,
+        lotteryCommitment: commitment,
+      };
     },
 
     /**
@@ -163,6 +211,8 @@ export const dropObject = restate.object({
       paidEntries: number;
       loyaltyTier: string;
       loyaltyMultiplier: number;
+      geoBonus: number;
+      inGeoZone: boolean;
     }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
@@ -206,6 +256,42 @@ export const dropObject = restate.object({
         });
       }
 
+      // Geo-fence validation
+      let geoBonus = 1.0;
+      let inGeoZone = false;
+
+      if (state.config.geoFence) {
+        const { geoFence, geoFenceMode, geoFenceBonusMultiplier } =
+          state.config;
+
+        if (geoFenceMode === "exclusive") {
+          // Location required for exclusive drops
+          if (!request.location) {
+            throw new restate.TerminalError(
+              "Location required for this geo-fenced drop",
+              { errorCode: 400 }
+            );
+          }
+          if (!isInsideGeoFence(request.location, geoFence)) {
+            throw new restate.TerminalError(
+              "You must be within the drop zone to register",
+              { errorCode: 403 }
+            );
+          }
+          inGeoZone = true;
+        } else if (geoFenceMode === "bonus") {
+          // Bonus mode: location is optional, but gives a multiplier if inside
+          if (
+            request.location &&
+            isInsideGeoFence(request.location, geoFence)
+          ) {
+            geoBonus =
+              geoFenceBonusMultiplier ?? config.geo.defaultBonusMultiplier;
+            inGeoZone = true;
+          }
+        }
+      }
+
       // Get user's loyalty multiplier
       const loyaltyInfo = await ctx
         .objectClient(userLoyaltyObject, request.userId)
@@ -238,10 +324,12 @@ export const dropObject = restate.object({
 
       // Register with the calculated total
       const actualTickets = rolloverUsed + freeEntry + paidEntries;
-      const effectiveTickets = Math.floor(actualTickets * loyaltyInfo.multiplier);
-      
+      // Combine loyalty multiplier and geo bonus
+      const combinedMultiplier = loyaltyInfo.multiplier * geoBonus;
+      const effectiveTickets = Math.floor(actualTickets * combinedMultiplier);
+
       state.participantTickets[request.userId] = actualTickets;
-      state.participantMultipliers[request.userId] = loyaltyInfo.multiplier;
+      state.participantMultipliers[request.userId] = combinedMultiplier;
       await ctx.set(STATE_KEY, state);
 
       // Update participant state with entry breakdown and loyalty info
@@ -264,8 +352,13 @@ export const dropObject = restate.object({
       // Publish update to NATS (wrapped in side effect)
       await publishDropStateEffect(ctx, state.config.dropId, state);
 
+      const geoInfo = inGeoZone ? ` [geo: ${geoBonus}x]` : "";
       console.log(
-        `[Drop ${state.config.dropId}] User ${request.userId} registered: ${actualTickets} tickets × ${loyaltyInfo.multiplier}x (${loyaltyInfo.tier}) = ${effectiveTickets} effective`
+        `[Drop ${state.config.dropId}] User ${
+          request.userId
+        } registered: ${actualTickets} tickets × ${combinedMultiplier.toFixed(
+          2
+        )}x (${loyaltyInfo.tier}${geoInfo}) = ${effectiveTickets} effective`
       );
 
       return {
@@ -279,6 +372,8 @@ export const dropObject = restate.object({
         paidEntries,
         loyaltyTier: loyaltyInfo.tier,
         loyaltyMultiplier: loyaltyInfo.multiplier,
+        geoBonus,
+        inGeoZone,
       };
     },
 
@@ -329,18 +424,32 @@ export const dropObject = restate.object({
 
       // Calculate how many winners + backups to select
       const primaryWinnerCount = Math.min(state.inventory, participantCount);
-      const backupMultiplier = state.config.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER;
+      const backupMultiplier =
+        state.config.backupMultiplier ?? DEFAULT_BACKUP_MULTIPLIER;
       const totalToSelect = Math.min(
         Math.ceil(primaryWinnerCount * backupMultiplier),
         participantCount
       );
 
-      // Create verifiable seed from committed secret + participant snapshot
-      const participantSnapshot = createParticipantSnapshot(
+      // Build Merkle tree and generate seed from Merkle root
+      const merkleTree = MerkleTree.fromParticipants(
         state.participantTickets,
         state.participantMultipliers
       );
-      const seed = generateVerifiableSeed(state.lotterySecret!, participantSnapshot);
+      if (!state.lotterySecret) {
+        throw new restate.TerminalError("Lottery secret missing", {
+          errorCode: 500,
+        });
+      }
+      if (!state.config.lotteryCommitment) {
+        throw new restate.TerminalError("Lottery commitment missing", {
+          errorCode: 500,
+        });
+      }
+      const seed = generateVerifiableSeedFromMerkle(
+        state.lotterySecret,
+        merkleTree.root
+      );
 
       // Select all winners at once using multipliers
       const allSelected = selectWinnersWithMultipliers(
@@ -359,15 +468,19 @@ export const dropObject = restate.object({
       state.expiredWinners = [];
       state.phase = "purchase";
 
-      // Create lottery proof for verification
-      state.lotteryProof = createLotteryProof(
-        state.lotterySecret!,
-        state.config.lotteryCommitment!,
+      // Create lottery proof for verification (using Merkle tree)
+      const proofResult = createLotteryProof(
+        state.lotterySecret,
+        state.config.lotteryCommitment,
         state.participantTickets,
         state.participantMultipliers,
         winners,
         backupWinners
       );
+      state.lotteryProof = proofResult.proof;
+      // Store leaves and hashes for inclusion proof generation
+      state.participantLeaves = proofResult.leaves;
+      state.participantLeafHashes = proofResult.leafHashes;
 
       // Calculate purchase window end time
       const now = await getCurrentTime(ctx);
@@ -488,7 +601,8 @@ export const dropObject = restate.object({
 
       const now = await getCurrentTime(ctx);
       // Use remaining purchase window time (not full window for each winner)
-      const expiresAt = state.purchaseEnd ?? now + state.config.purchaseWindow * 1000;
+      const expiresAt =
+        state.purchaseEnd ?? now + state.config.purchaseWindow * 1000;
 
       // Generate self-verifying HMAC-signed purchase token
       // Format: shortId.expiry.signature (~41 chars)
@@ -581,6 +695,13 @@ export const dropObject = restate.object({
 
       await ctx.set(STATE_KEY, state);
 
+      // If completed early (inventory exhausted), remove from active drop index
+      if (state.phase === "completed") {
+        await ctx.run("drops_index_delete", async () => {
+          await deleteDropIndex(state.config.dropId);
+        });
+      }
+
       // Publish update to NATS (wrapped in side effect)
       await publishDropStateEffect(ctx, state.config.dropId, state);
 
@@ -612,6 +733,11 @@ export const dropObject = restate.object({
       // Transition to completed
       state.phase = "completed";
       await ctx.set(STATE_KEY, state);
+
+      // Remove from active drop index
+      await ctx.run("drops_index_delete", async () => {
+        await deleteDropIndex(state.config.dropId);
+      });
 
       // Publish update to NATS (wrapped in side effect)
       await publishDropStateEffect(ctx, state.config.dropId, state);
@@ -673,7 +799,13 @@ export const dropObject = restate.object({
       // Try to promote a backup
       let promotedUser: string | undefined;
       if (state.backupWinners.length > 0 && state.inventory > 0) {
-        promotedUser = state.backupWinners.shift()!;
+        const next = state.backupWinners.shift();
+        if (!next) {
+          await ctx.set(STATE_KEY, state);
+          await publishDropStateEffect(ctx, state.config.dropId, state);
+          return { expired: true };
+        }
+        promotedUser = next;
         state.winners.push(promotedUser);
 
         // Notify the promoted backup
@@ -712,7 +844,11 @@ export const dropObject = restate.object({
     promoteBackup: async (
       ctx: restate.ObjectContext,
       _input: Record<string, never>
-    ): Promise<{ success: boolean; promotedUser?: string; backupsRemaining: number }> => {
+    ): Promise<{
+      success: boolean;
+      promotedUser?: string;
+      backupsRemaining: number;
+    }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
       if (!state || state.phase !== "purchase") {
@@ -728,7 +864,10 @@ export const dropObject = restate.object({
       }
 
       // Promote next backup
-      const promotedUser = state.backupWinners.shift()!;
+      const promotedUser = state.backupWinners.shift();
+      if (!promotedUser) {
+        return { success: false, backupsRemaining: 0 };
+      }
       state.winners.push(promotedUser);
 
       await ctx.set(STATE_KEY, state);
@@ -799,6 +938,78 @@ export const dropObject = restate.object({
     },
 
     /**
+     * Get Merkle inclusion proof for a specific user
+     * Allows users to independently verify they were included in the lottery
+     * Only available after lottery has run
+     */
+    getInclusionProof: async (
+      ctx: restate.ObjectContext,
+      input: { userId: string }
+    ): Promise<{
+      available: boolean;
+      proof?: UserInclusionProof;
+      error?: string;
+    }> => {
+      const state = await ctx.get<DropState>(STATE_KEY);
+
+      if (!state) {
+        return { available: false, error: "Drop not found" };
+      }
+
+      // Before lottery runs, no proofs available
+      if (state.phase === "registration") {
+        return { available: false, error: "Lottery has not run yet" };
+      }
+
+      // Check if we have the data needed to generate proofs
+      if (
+        !state.participantLeaves ||
+        !state.participantLeafHashes ||
+        !state.lotteryProof
+      ) {
+        return { available: false, error: "Proof data not available" };
+      }
+
+      // Find the user's leaf
+      const leafIndex = state.participantLeaves.findIndex(
+        (leaf) => leaf.userId === input.userId
+      );
+
+      if (leafIndex === -1) {
+        return { available: false, error: "User not found in lottery" };
+      }
+
+      // Rebuild Merkle tree to generate proof
+      // (We could optimize this by storing the full tree, but it's a trade-off)
+      const merkleTree = MerkleTree.fromParticipants(
+        state.participantTickets,
+        state.participantMultipliers
+      );
+
+      const merkleProof = merkleTree.getProofByIndex(leafIndex);
+      if (!merkleProof) {
+        return { available: false, error: "Failed to generate proof" };
+      }
+
+      // Verify the proof server-side before returning
+      const verified = verifyMerkleProof(
+        merkleProof.leaf,
+        merkleProof.proof,
+        state.lotteryProof.participantMerkleRoot
+      );
+
+      const inclusionProof: UserInclusionProof = {
+        leaf: merkleProof.leaf,
+        leafHash: merkleProof.leafHash,
+        proof: merkleProof.proof,
+        merkleRoot: state.lotteryProof.participantMerkleRoot,
+        verified,
+      };
+
+      return { available: true, proof: inclusionProof };
+    },
+
+    /**
      * Get current drop state (public)
      */
     getState: async (
@@ -817,6 +1028,10 @@ export const dropObject = restate.object({
       purchaseEnd?: number;
       ticketPricing: TicketPricing;
       lotteryCommitment?: string;
+      // Geo-fence info
+      geoFence?: GeoFence;
+      geoFenceMode?: GeoFenceMode;
+      geoFenceBonusMultiplier?: number;
     }> => {
       const state = await ctx.get<DropState>(STATE_KEY);
 
@@ -858,6 +1073,10 @@ export const dropObject = restate.object({
           state.config.maxTicketsPerUser
         ),
         lotteryCommitment: state.config.lotteryCommitment,
+        // Geo-fence info
+        geoFence: state.config.geoFence,
+        geoFenceMode: state.config.geoFenceMode,
+        geoFenceBonusMultiplier: state.config.geoFenceBonusMultiplier,
       };
     },
   },

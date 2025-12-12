@@ -1,10 +1,17 @@
 import crypto from "node:crypto";
-import type { DropState, TicketPricing, LotteryProof } from "./types.js";
+import type {
+  DropState,
+  TicketPricing,
+  LotteryProof,
+  MerkleLeafData,
+} from "./types.js";
+import { MerkleTree, generateVerifiableSeedFromMerkle } from "./merkle.js";
 
 /**
  * Seeded random number generator using LCG
+ * Returns values in [0, 1)
  */
-function createSeededRNG(seed: string) {
+function createSeededRNG(seed: string): () => number {
   let hash = 0;
   for (let i = 0; i < seed.length; i++) {
     const char = seed.charCodeAt(i);
@@ -21,6 +28,7 @@ function createSeededRNG(seed: string) {
 
 /**
  * Fisher-Yates shuffle with seeded randomness
+ * @deprecated Use FenwickTree-based selection for large datasets
  */
 function seededShuffle<T>(array: T[], seed: string): T[] {
   const shuffled = [...array];
@@ -32,6 +40,109 @@ function seededShuffle<T>(array: T[], seed: string): T[] {
   }
 
   return shuffled;
+}
+
+// ============================================================
+// Fenwick Tree (Binary Indexed Tree) for O(log N) Weighted Selection
+// ============================================================
+
+/**
+ * Fenwick Tree (Binary Indexed Tree) for efficient prefix sum queries and updates.
+ * Used for memory-efficient weighted random selection without replacement.
+ *
+ * Memory: O(N) where N is number of participants (not total tickets)
+ * Query: O(log N)
+ * Update: O(log N)
+ */
+export class FenwickTree {
+  private tree: number[];
+  private n: number;
+
+  constructor(size: number) {
+    this.n = size;
+    // 1-indexed for simpler bit manipulation
+    this.tree = new Array(size + 1).fill(0);
+  }
+
+  /**
+   * Initialize tree from an array of weights
+   * O(N) construction
+   */
+  static fromWeights(weights: number[]): FenwickTree {
+    const ft = new FenwickTree(weights.length);
+    // Build tree in O(N) by adding each weight
+    for (let i = 0; i < weights.length; i++) {
+      ft.update(i, weights[i]);
+    }
+    return ft;
+  }
+
+  /**
+   * Add delta to the value at index (0-indexed)
+   * O(log N)
+   */
+  update(index: number, delta: number): void {
+    // Convert to 1-indexed
+    let i = index + 1;
+    while (i <= this.n) {
+      this.tree[i] += delta;
+      i += i & -i; // Add lowest set bit
+    }
+  }
+
+  /**
+   * Get prefix sum from index 0 to index (inclusive, 0-indexed)
+   * O(log N)
+   */
+  prefixSum(index: number): number {
+    let sum = 0;
+    // Convert to 1-indexed
+    let i = index + 1;
+    while (i > 0) {
+      sum += this.tree[i];
+      i -= i & -i; // Remove lowest set bit
+    }
+    return sum;
+  }
+
+  /**
+   * Get total sum of all elements
+   */
+  totalSum(): number {
+    return this.prefixSum(this.n - 1);
+  }
+
+  /**
+   * Find the smallest index where prefixSum(index) > target
+   * Used to find which participant was selected by a random value
+   * O(log N) using binary search on prefix sums
+   */
+  findIndex(target: number): number {
+    let lo = 0;
+    let hi = this.n - 1;
+
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (this.prefixSum(mid) <= target) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+
+    return lo;
+  }
+
+  /**
+   * Get the weight at a specific index (0-indexed)
+   * O(log N)
+   */
+  getWeight(index: number): number {
+    if (index === 0) {
+      return this.prefixSum(0);
+    }
+    return this.prefixSum(index) - this.prefixSum(index - 1);
+  }
 }
 
 /**
@@ -105,10 +216,10 @@ export function generateLotterySeed(dropState: DropState): string {
     (a, b) => a + b,
     0
   );
-  
+
   // Add cryptographic randomness to prevent prediction
   const serverRandom = crypto.randomBytes(32).toString("hex");
-  
+
   // Combine deterministic data with server randomness
   return `${dropState.config.dropId}:${participantCount}:${totalTickets}:${dropState.config.registrationEnd}:${serverRandom}`;
 }
@@ -207,13 +318,10 @@ export function generateLotteryCommitment(): {
 } {
   // Generate 32 bytes of cryptographic randomness
   const secret = crypto.randomBytes(32).toString("hex");
-  
+
   // Create commitment hash that will be published
-  const commitment = crypto
-    .createHash("sha256")
-    .update(secret)
-    .digest("hex");
-  
+  const commitment = crypto.createHash("sha256").update(secret).digest("hex");
+
   return { secret, commitment };
 }
 
@@ -222,16 +330,14 @@ export function generateLotteryCommitment(): {
  * Anyone can call this to verify the lottery wasn't rigged
  */
 export function verifyCommitment(secret: string, commitment: string): boolean {
-  const computed = crypto
-    .createHash("sha256")
-    .update(secret)
-    .digest("hex");
+  const computed = crypto.createHash("sha256").update(secret).digest("hex");
   return computed === commitment;
 }
 
 /**
  * Create deterministic participant snapshot for seed generation
  * Sorted by userId to ensure reproducibility regardless of insertion order
+ * @deprecated Use Merkle tree approach instead for memory efficiency
  */
 export function createParticipantSnapshot(
   participantTickets: Record<string, number>,
@@ -246,7 +352,7 @@ export function createParticipantSnapshot(
       return `${userId}:${effectiveTickets}`;
     })
     .join("|");
-  
+
   return sorted;
 }
 
@@ -254,6 +360,7 @@ export function createParticipantSnapshot(
  * Generate verifiable lottery seed
  * Combines server secret with participant data
  * This ensures the seed couldn't be manipulated after seeing registrations
+ * @deprecated Use generateVerifiableSeedFromMerkle for memory efficiency
  */
 export function generateVerifiableSeed(
   secret: string,
@@ -261,13 +368,24 @@ export function generateVerifiableSeed(
 ): string {
   return crypto
     .createHash("sha256")
-    .update(secret + "|" + participantSnapshot)
+    .update(`${secret}|${participantSnapshot}`)
     .digest("hex");
 }
 
 /**
- * Create full lottery proof for public verification
- * Contains everything needed to independently verify the lottery results
+ * Result of creating a lottery proof with Merkle tree
+ * Includes data needed for generating inclusion proofs later
+ */
+export interface LotteryProofResult {
+  proof: LotteryProof;
+  leaves: MerkleLeafData[];
+  leafHashes: string[];
+}
+
+/**
+ * Create full lottery proof for public verification using Merkle tree
+ * Memory-efficient: stores only Merkle root instead of full participant list
+ * Individual users can request inclusion proofs via API
  */
 export function createLotteryProof(
   secret: string,
@@ -276,29 +394,51 @@ export function createLotteryProof(
   participantMultipliers: Record<string, number>,
   winners: string[],
   backupWinners: string[]
-): LotteryProof {
-  const participantSnapshot = createParticipantSnapshot(
+): LotteryProofResult {
+  // Build Merkle tree from participants
+  const merkleTree = MerkleTree.fromParticipants(
     participantTickets,
     participantMultipliers
   );
-  const seed = generateVerifiableSeed(secret, participantSnapshot);
-  
-  return {
+
+  // Generate seed from Merkle root
+  const seed = generateVerifiableSeedFromMerkle(secret, merkleTree.root);
+
+  const proof: LotteryProof = {
     commitment,
     secret,
-    participantSnapshot,
+    participantMerkleRoot: merkleTree.root,
+    participantCount: merkleTree.size,
     seed,
-    algorithm: "weighted-fisher-yates-v1",
+    algorithm: "weighted-fenwick-v2",
     timestamp: Date.now(),
     winners,
     backupWinners,
   };
+
+  return {
+    proof,
+    leaves: merkleTree.getLeaves(),
+    leafHashes: merkleTree.getLeafHashes(),
+  };
 }
 
 /**
- * Weighted winner selection with loyalty multipliers
- * Each ticket is multiplied by the user's loyalty multiplier
- * Users can only win once (unique winners)
+ * Weighted winner selection with loyalty multipliers using Fenwick Tree
+ *
+ * Memory-efficient: O(N) where N = number of participants (not total tickets)
+ * Time: O(K * log N) where K = number of winners to select
+ *
+ * Each ticket is multiplied by the user's loyalty multiplier.
+ * Users can only win once (unique winners).
+ *
+ * Algorithm:
+ * 1. Build a Fenwick Tree with effective ticket weights for each participant
+ * 2. For each winner to select:
+ *    - Generate random value R in [0, totalWeight)
+ *    - Find participant index where cumulative weight > R
+ *    - Add participant to winners
+ *    - Set their weight to 0 (remove from future selection)
  */
 export function selectWinnersWithMultipliers(
   participantTickets: Record<string, number>,
@@ -306,7 +446,10 @@ export function selectWinnersWithMultipliers(
   count: number,
   seed: string
 ): string[] {
-  const entries = Object.entries(participantTickets);
+  // Sort entries by userId for deterministic ordering (critical for reproducibility)
+  const entries = Object.entries(participantTickets).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
 
   if (entries.length === 0) return [];
 
@@ -315,29 +458,39 @@ export function selectWinnersWithMultipliers(
     return entries.map(([userId]) => userId);
   }
 
-  // Expand participants by effective ticket count (tickets * multiplier) into a pool
-  const pool: string[] = [];
+  // Calculate effective weights for each participant
+  const weights: number[] = [];
+  const userIds: string[] = [];
+
   for (const [userId, tickets] of entries) {
     const multiplier = participantMultipliers[userId] ?? 1.0;
     const effectiveTickets = Math.floor(tickets * multiplier);
-    for (let i = 0; i < effectiveTickets; i++) {
-      pool.push(userId);
-    }
+    weights.push(effectiveTickets);
+    userIds.push(userId);
   }
 
-  // Shuffle the pool
-  const shuffled = seededShuffle(pool, seed);
+  // Build Fenwick Tree from weights
+  const tree = FenwickTree.fromWeights(weights);
+  const random = createSeededRNG(seed);
 
-  // Select unique winners
+  // Select winners using weighted random selection without replacement
   const winners: string[] = [];
-  const seen = new Set<string>();
 
-  for (const userId of shuffled) {
-    if (!seen.has(userId)) {
-      winners.push(userId);
-      seen.add(userId);
-      if (winners.length >= count) break;
-    }
+  for (let i = 0; i < count && tree.totalSum() > 0; i++) {
+    const totalWeight = tree.totalSum();
+
+    // Generate random value in [0, totalWeight)
+    const target = Math.floor(random() * totalWeight);
+
+    // Find the participant at this cumulative weight
+    const winnerIndex = tree.findIndex(target);
+    const winnerId = userIds[winnerIndex];
+
+    winners.push(winnerId);
+
+    // Remove winner from future selection by setting their weight to 0
+    const currentWeight = tree.getWeight(winnerIndex);
+    tree.update(winnerIndex, -currentWeight);
   }
 
   return winners;
@@ -365,10 +518,10 @@ export function calculateWinProbabilityWithMultiplier(
 ): number {
   if (totalEffectiveTickets === 0 || userTickets === 0) return 0;
   if (inventory >= participantCount) return 1; // Everyone wins
-  
+
   const effectiveTickets = Math.floor(userTickets * loyaltyMultiplier);
   const poolShare = effectiveTickets / totalEffectiveTickets;
-  
+
   // Approximate probability
   return Math.min(1, poolShare * Math.min(inventory, participantCount));
 }

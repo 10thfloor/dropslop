@@ -20,6 +20,22 @@ function generateSecureUserId(): string {
 }
 
 /**
+ * Non-hook helper so other client components (eg homepage lists) can resolve
+ * the same persisted userId without violating Rules of Hooks.
+ */
+export function getOrCreateUserId(dropId?: string): string {
+  const storageKey = dropId ? `dropUserId:${dropId}` : "dropUserId";
+  let storedId = localStorage.getItem(storageKey);
+
+  if (!storedId) {
+    storedId = generateSecureUserId();
+    localStorage.setItem(storageKey, storedId);
+  }
+
+  return storedId;
+}
+
+/**
  * Hook to get or generate a unique user ID
  * If dropId is provided, creates a drop-specific user ID
  * Uses crypto.randomUUID() for secure ID generation
@@ -28,17 +44,7 @@ export function useUserId(dropId?: string): string | null {
   const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    // Use drop-specific key so users get unique IDs per drop
-    const storageKey = dropId ? `dropUserId:${dropId}` : "dropUserId";
-    let storedId = localStorage.getItem(storageKey);
-
-    if (!storedId) {
-      // Generate a new secure unique ID
-      storedId = generateSecureUserId();
-      localStorage.setItem(storageKey, storedId);
-    }
-
-    setUserId(storedId);
+    setUserId(getOrCreateUserId(dropId));
   }, [dropId]);
 
   return userId;

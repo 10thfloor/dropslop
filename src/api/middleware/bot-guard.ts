@@ -5,17 +5,22 @@ import type { BotValidationRequest } from "../../lib/types.js";
 
 /**
  * Bot guard middleware that validates requests before allowing registration
+ *
  * Note: This middleware must be used with routes that expect botValidation in body
  */
 export async function botGuard(c: Context, next: Next) {
-  // Clone the request to allow body to be read again
-  const clonedRequest = c.req.raw.clone();
-  let body: Record<string, unknown>;
+  // Check if body was already parsed by a previous middleware (e.g., queueGuard)
+  let body = c.get("parsedBody") as Record<string, unknown> | undefined;
 
-  try {
-    body = (await clonedRequest.json()) as Record<string, unknown>;
-  } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
+  if (!body) {
+    // Clone the request to allow body to be read again
+    const clonedRequest = c.req.raw.clone();
+
+    try {
+      body = (await clonedRequest.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
   }
 
   const botValidation = body.botValidation as BotValidationRequest | undefined;
@@ -34,8 +39,12 @@ export async function botGuard(c: Context, next: Next) {
     return c.json({ error: "Invalid proof-of-work" }, 403);
   }
 
-  // Calculate trust score with PoW result
-  const result = await calculateTrustScore(botValidation, powValid);
+  // Get behavior score from queue guard (if present)
+  // This is set by queueGuard middleware when queue is enabled
+  const behaviorScore = c.get("behaviorScore") as number | undefined;
+
+  // Calculate trust score with PoW result and optional behavior score
+  const result = await calculateTrustScore(botValidation, powValid, behaviorScore);
 
   if (!result.allowed) {
     return c.json(

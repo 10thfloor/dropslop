@@ -8,8 +8,10 @@ import type { NatsConnection, Subscription } from "@nats-io/nats-core";
 import {
   type DropStateEvent,
   type UserStateEvent,
+  type QueueStateEvent,
   getDropTopic,
   getUserTopic,
+  getQueueTopic,
 } from "./events.js";
 import { createLogger } from "./logger.js";
 import { config } from "./config.js";
@@ -120,6 +122,28 @@ export async function publishUserState(
   }
 }
 
+/**
+ * Publish queue state update to NATS
+ *
+ * See publishDropState for design rationale on fire-and-forget pattern.
+ */
+export async function publishQueueState(
+  dropId: string,
+  tokenId: string,
+  state: QueueStateEvent
+): Promise<void> {
+  try {
+    const conn = await getNatsConnection();
+    const topic = getQueueTopic(dropId, tokenId);
+    conn.publish(topic, textEncoder.encode(JSON.stringify(state)));
+  } catch (error) {
+    logger.error(
+      { err: error, dropId, tokenId },
+      "Failed to publish queue state"
+    );
+  }
+}
+
 // ============================================================
 // Subscription helpers for SSE
 // ============================================================
@@ -143,6 +167,23 @@ export async function subscribeDropState(
 }
 
 /**
+ * Subscribe to all drop state updates (wildcard)
+ * Used for broadcasting drop list snapshots to homepage.
+ */
+export async function subscribeAllDropStates(): Promise<Subscription> {
+  try {
+    const conn = await getNatsConnection();
+    const topic = "drop.*.state";
+    const subscription = conn.subscribe(topic);
+    logger.debug({ topic }, "Subscribed to all drop states");
+    return subscription;
+  } catch (error) {
+    logger.error({ err: error }, "Failed to subscribe to all drop states");
+    throw error;
+  }
+}
+
+/**
  * Subscribe to user state updates with error handling
  */
 export async function subscribeUserState(
@@ -159,6 +200,28 @@ export async function subscribeUserState(
     logger.error(
       { err: error, dropId, userId },
       "Failed to subscribe to user state"
+    );
+    throw error;
+  }
+}
+
+/**
+ * Subscribe to queue state updates with error handling
+ */
+export async function subscribeQueueState(
+  dropId: string,
+  tokenId: string
+): Promise<Subscription> {
+  try {
+    const conn = await getNatsConnection();
+    const topic = getQueueTopic(dropId, tokenId);
+    const subscription = conn.subscribe(topic);
+    logger.debug({ dropId, tokenId, topic }, "Subscribed to queue state");
+    return subscription;
+  } catch (error) {
+    logger.error(
+      { err: error, dropId, tokenId },
+      "Failed to subscribe to queue state"
     );
     throw error;
   }
