@@ -57,11 +57,13 @@ The `APP_PREFIX` determines your app names (e.g., `mycompany-drop-api`, `mycompa
 ## Prerequisites
 
 1. Install the Fly CLI:
+
    ```bash
    curl -L https://fly.io/install.sh | sh
    ```
 
 2. Login to Fly:
+
    ```bash
    flyctl auth login
    ```
@@ -75,6 +77,7 @@ Run the deployment script from the project root:
 ```
 
 The script will:
+
 1. Create all Fly apps if they don't exist
 2. Create persistent volumes for NATS and Restate
 3. Deploy services in the correct order
@@ -146,8 +149,21 @@ Each service reads configuration from environment variables set in `fly.toml`:
 Set secrets for sensitive values:
 
 ```bash
-# Example: Set a secret API key
-flyctl secrets set API_SECRET_KEY=your-secret -a drop-api
+# Required for production security (replace APP_PREFIX=fdrop as needed)
+APP_PREFIX=fdrop
+WEB_ORIGIN="https://${APP_PREFIX}-web.fly.dev"
+
+# API + SSE need correct CORS
+flyctl secrets set -a "${APP_PREFIX}-api" CORS_ORIGINS="$WEB_ORIGIN"
+flyctl secrets set -a "${APP_PREFIX}-sse" CORS_ORIGINS="$WEB_ORIGIN"
+
+# Strongly recommended secrets
+flyctl secrets set -a "${APP_PREFIX}-api" ADMIN_SECRET="$(openssl rand -hex 32)"
+flyctl secrets set -a "${APP_PREFIX}-api" PURCHASE_TOKEN_SECRET="$(openssl rand -hex 32)"
+flyctl secrets set -a "${APP_PREFIX}-api" IP_HASH_SALT="$(openssl rand -hex 16)"
+
+# Optional (enables enhanced bot detection if you have FingerprintJS Pro)
+# flyctl secrets set -a "${APP_PREFIX}-api" FINGERPRINT_API_KEY="..."
 ```
 
 ### Custom Domain
@@ -210,6 +226,7 @@ flyctl vm status -a drop-api
 ### Health Checks
 
 All services have health check endpoints:
+
 - API: `GET /health`
 - SSE: `GET /health`
 - Restate: `GET /health` (port 8080)
@@ -286,4 +303,3 @@ Based on Fly.io's pricing (as of 2024):
 | **Total** | | | **~$32/month** |
 
 Note: Volumes are billed separately (~$0.15/GB/month).
-

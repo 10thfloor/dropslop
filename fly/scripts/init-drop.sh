@@ -51,9 +51,21 @@ echo ""
 # Initialize via Restate
 echo "Calling Restate to initialize drop..."
 
-flyctl ssh console -a "$APP_RESTATE" -C "curl -s -X POST http://localhost:8080/Drop/$DROP_ID/initialize \
-  -H 'content-type: application/json' \
-  -d '$PAYLOAD'"
+RESP=$(
+  flyctl ssh console -a "$APP_RESTATE" -C "curl -sS -X POST http://localhost:8080/Drop/$DROP_ID/initialize \
+    -H 'content-type: application/json' \
+    -d '$PAYLOAD'" || true
+)
+
+echo "$RESP"
+
+# Fail loudly if the service isn't registered (common misconfig after deploy)
+if echo "$RESP" | grep -q "service 'Drop' not found"; then
+  echo ""
+  echo "ERROR: Restate does not know the Drop service yet."
+  echo "Fix: register the worker deployment with Restate runtime (see fly/deploy.sh Step 6)."
+  exit 1
+fi
 
 echo ""
 echo "Drop initialized!"

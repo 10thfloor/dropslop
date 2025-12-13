@@ -5,52 +5,61 @@ app = "drop-restate"
 primary_region = "sjc"
 
 [build]
-  image = "restatedev/restate:latest"
+image = "restatedev/restate:latest"
 
 [env]
-  RESTATE_OBSERVABILITY__LOG__FORMAT = "json"
-  RESTATE_OBSERVABILITY__LOG__FILTER = "info"
+RESTATE_OBSERVABILITY__LOG__FORMAT = "json"
+RESTATE_OBSERVABILITY__LOG__FILTER = "info"
+# Required when using a persistent volume; prevents Restate from refusing to start
+# if the data directory contains pre-existing entries (e.g., lost+found).
+RESTATE_NODE_NAME = "fdrop-restate"
+# Keep for compatibility with config nesting conventions (harmless if unused by this version).
+RESTATE_META__NODE_NAME = "fdrop-restate"
+# Fly private networking is IPv6 (6PN). Restate's actual config keys are:
+# - [ingress].bind-address
+# - [admin].bind-address
+# (see `restate-server --dump-config` in the VM)
+RESTATE_INGRESS__BIND_ADDRESS = "[::]:8080"
+RESTATE_ADMIN__BIND_ADDRESS = "[::]:9070"
 
 [mounts]
-  source = "restate_data"
-  destination = "/restate-data"
+source = "restate_data"
+destination = "/restate-data"
 
 # Ingress port (8080) - for service calls
 [[services]]
-  protocol = "tcp"
-  internal_port = 8080
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+protocol = "tcp"
+internal_port = 8080
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 1
 
-  [[services.ports]]
-    port = 8080
+[[services.ports]]
+port = 8080
 
-  [services.concurrency]
-    type = "requests"
-    hard_limit = 1000
-    soft_limit = 800
+[services.concurrency]
+type = "requests"
+hard_limit = 1000
+soft_limit = 800
 
 # Admin port (9070) - for deployments registration
 [[services]]
-  protocol = "tcp"
-  internal_port = 9070
-  auto_stop_machines = false
+protocol = "tcp"
+internal_port = 9070
+auto_stop_machines = false
 
-  [[services.ports]]
-    port = 9070
+[[services.ports]]
+port = 9070
 
 [checks]
-  [checks.health]
-    grace_period = "30s"
-    interval = "30s"
-    method = "GET"
-    path = "/health"
-    port = 8080
-    timeout = "5s"
-    type = "http"
+[checks.health]
+grace_period = "30s"
+interval = "30s"
+port = 8080
+timeout = "5s"
+type = "tcp"
 
 [vm]
-  memory = "1gb"
-  cpu_kind = "shared"
-  cpus = 1
+memory = "1gb"
+cpu_kind = "shared"
+cpus = 1

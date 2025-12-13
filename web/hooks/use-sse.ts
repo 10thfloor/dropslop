@@ -7,6 +7,7 @@ import type {
   SSEEvent,
   TicketPricing,
 } from "@/lib/types";
+import { getSseBaseUrl } from "@/lib/sse-base";
 
 interface SSEConnectedEvent {
   type: "connected";
@@ -107,10 +108,10 @@ export function useSSE({
       eventSourceRef.current.close();
     }
 
-    // Connect directly to SSE server (Next.js proxy doesn't handle SSE well)
-    const sseBaseUrl =
-      process.env.NEXT_PUBLIC_SSE_URL || "http://localhost:3004";
-    const url = `${sseBaseUrl}/events/${dropId}/${userId}`;
+    const base = getSseBaseUrl();
+    const url = base
+      ? `${base}/events/${dropId}/${userId}`
+      : `/events/${dropId}/${userId}`;
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
 

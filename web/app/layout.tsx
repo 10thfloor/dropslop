@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Limited Edition Drop | Arc'teryx",
-  description: "Exclusive product drop - Enter for a chance to purchase",
+  title: "Limited Edition Drop",
+  description: "Exclusive product drop — enter for a chance to purchase",
 };
 
 export default function RootLayout({

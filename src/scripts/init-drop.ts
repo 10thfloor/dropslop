@@ -3,6 +3,7 @@
  * Initialize a demo drop
  * Usage: npx tsx src/scripts/init-drop.ts
  */
+import "../lib/env-loader.js";
 import { createLogger } from "../lib/logger.js";
 
 const logger = createLogger("init-drop");
@@ -10,7 +11,8 @@ const RESTATE_URL = process.env.RESTATE_INGRESS_URL || "http://localhost:8080";
 
 async function initDrop() {
   // Generate unique drop ID with timestamp, or use env var if provided
-  const dropId = process.env.DROP_ID || `demo-drop-${Math.floor(Date.now() / 1000)}`;
+  const dropId =
+    process.env.DROP_ID || `demo-drop-${Math.floor(Date.now() / 1000)}`;
   const now = Date.now();
 
   const config = {
@@ -49,7 +51,7 @@ async function initDrop() {
 ║  Inventory: ${config.inventory.toString().padEnd(42)}     ║
 ║  Registration ends in: 5 minutes                          ║
 ║                                                           ║
-║  Open http://localhost:3000 to test                       ║
+║  Open http://localhost:3005 to test                       ║
 ╚═══════════════════════════════════════════════════════════╝
 `);
   } catch (error) {
@@ -59,7 +61,7 @@ Make sure:
 1. Restate is running: docker-compose up -d
 2. Worker is registered: 
    curl localhost:9070/deployments -H 'content-type: application/json' \\
-     -d '{"uri":"http://host.docker.internal:8081"}'
+     -d '{"uri":"http://host.docker.internal:9080"}'
 `);
     process.exit(1);
   }

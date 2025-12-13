@@ -7,6 +7,7 @@ import type {
   QueueSSEEvent,
   QueueJoinResponse,
 } from "@/lib/types";
+import { getSseBaseUrl } from "@/lib/sse-base";
 
 const API_BASE = "/api";
 
@@ -63,7 +64,9 @@ export function useQueue({
   const [status, setStatus] = useState<UseQueueReturn["status"]>("not_joined");
   const [token, setToken] = useState<string | null>(null);
   const [position, setPosition] = useState<number | null>(null);
-  const [estimatedWaitSeconds, setEstimatedWaitSeconds] = useState<number | null>(null);
+  const [estimatedWaitSeconds, setEstimatedWaitSeconds] = useState<
+    number | null
+  >(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [queueEnabled, setQueueEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -91,11 +94,14 @@ export function useQueue({
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: "Failed to join queue" }));
+        const errData = await res
+          .json()
+          .catch(() => ({ error: "Failed to join queue" }));
         throw new Error(errData.error || "Failed to join queue");
       }
 
-      const data: QueueJoinResponse & { queueEnabled?: boolean } = await res.json();
+      const data: QueueJoinResponse & { queueEnabled?: boolean } =
+        await res.json();
 
       setQueueEnabled(data.queueEnabled !== false);
       setToken(data.token);
@@ -125,8 +131,10 @@ export function useQueue({
   useEffect(() => {
     if (!token || !enabled || status === "ready" || status === "used") return;
 
-    const sseBaseUrl = process.env.NEXT_PUBLIC_SSE_URL || "http://localhost:3004";
-    const url = `${sseBaseUrl}/events/queue/${dropId}/${token}`;
+    const base = getSseBaseUrl();
+    const url = base
+      ? `${base}/events/queue/${dropId}/${token}`
+      : `/events/queue/${dropId}/${token}`;
 
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
@@ -192,7 +200,7 @@ export function useQueue({
       // Throttle to max once per 100ms
       if (now - lastMouseMoveRef.current > 100) {
         lastMouseMoveRef.current = now;
-        setBehaviorSignals((prev) => ({
+        setBehaviorSignals((prev: QueueBehaviorSignals) => ({
           ...prev,
           mouseMovements: prev.mouseMovements + 1,
         }));
@@ -201,7 +209,7 @@ export function useQueue({
 
     // Track scroll events
     const handleScroll = () => {
-      setBehaviorSignals((prev) => ({
+      setBehaviorSignals((prev: QueueBehaviorSignals) => ({
         ...prev,
         scrollEvents: prev.scrollEvents + 1,
       }));
@@ -209,7 +217,7 @@ export function useQueue({
 
     // Track key presses (count only, not content)
     const handleKeyDown = () => {
-      setBehaviorSignals((prev) => ({
+      setBehaviorSignals((prev: QueueBehaviorSignals) => ({
         ...prev,
         keyPresses: prev.keyPresses + 1,
       }));
@@ -217,7 +225,7 @@ export function useQueue({
 
     // Track focus/blur
     const handleFocus = () => {
-      setBehaviorSignals((prev) => ({
+      setBehaviorSignals((prev: QueueBehaviorSignals) => ({
         ...prev,
         focusBlurEvents: prev.focusBlurEvents + 1,
       }));
@@ -225,7 +233,7 @@ export function useQueue({
 
     // Track visibility changes
     const handleVisibilityChange = () => {
-      setBehaviorSignals((prev) => ({
+      setBehaviorSignals((prev: QueueBehaviorSignals) => ({
         ...prev,
         visibilityChanges: prev.visibilityChanges + 1,
       }));
@@ -233,7 +241,7 @@ export function useQueue({
 
     // Update time on page periodically
     const timeInterval = setInterval(() => {
-      setBehaviorSignals((prev) => ({
+      setBehaviorSignals((prev: QueueBehaviorSignals) => ({
         ...prev,
         timeOnPage: Date.now() - pageLoadTimeRef.current,
       }));
@@ -258,13 +266,7 @@ export function useQueue({
     };
   }, [enabled]);
 
-  // Update time on page when behavior signals change
-  useEffect(() => {
-    setBehaviorSignals((prev) => ({
-      ...prev,
-      timeOnPage: Date.now() - pageLoadTimeRef.current,
-    }));
-  }, [status]);
+  // timeOnPage is updated via the interval in the behavioral signal collection effect.
 
   return {
     status,
@@ -279,4 +281,3 @@ export function useQueue({
     isReady: status === "ready",
   };
 }
-

@@ -15,9 +15,14 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
+COPY shared/ /shared/
 
 # Replace next.config with Fly-specific version
 COPY fly/web/next.config.fly.ts ./next.config.ts
+
+# Some repos may not have a public/ directory. Next.js expects it optionally,
+# but our runtime COPY step assumes it exists.
+RUN mkdir -p ./public
 
 # Build Next.js (standalone output)
 RUN pnpm run build

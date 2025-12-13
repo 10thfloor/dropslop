@@ -1,16 +1,17 @@
 # Product Drop Backend System
 
-A high-reliability product drop backend system with durable workflows, real-time updates, and multi-layered bot mitigation. Features a sleek Arc'teryx-inspired Next.js frontend.
+A high-reliability product drop system with durable workflows, real-time updates, and multi-layered bot mitigation. Includes a modern Next.js + Tailwind frontend.
 
 ## Features
 
-- **Durable Execution**: Restate virtual objects ensure zero lost purchases
-- **Fair Lottery**: Deterministic random selection ensures equal opportunity
-- **Bot Resistance**: FingerprintJS + timing analysis + SHA-256 proof-of-work
-- **Real-time Updates**: Server-Sent Events for live queue position
-- **Crash Recovery**: Automatic state recovery on system failures
-- **Purchase Protection**: Token expiration and double-purchase prevention
-- **Modern UI**: Arc'teryx-inspired dark theme with Next.js + Tailwind CSS
+- **Durable Execution**: Restate virtual objects + timers for reliable drop lifecycle and recovery
+- **Provable Lottery**: Commit/reveal seed + Merkle participant snapshot for independent verification
+- **Scalable Winner Selection**: Weighted selection via Fenwick tree (no O(totalTickets) expansion)
+- **Backup Winners**: Automatic waitlist promotion if winners don’t purchase in time
+- **Geo-fencing**: Optional location restrictions + bonus multipliers
+- **Bot Resistance**: Proof-of-work + behavioral signals + optional FingerprintJS integration
+- **Real-time UX**: SSE for live drop lists, state updates, and queue status
+- **Purchase Protection**: Single-use purchase tokens, expiration, and double-purchase prevention
 
 ## Tech Stack
 
@@ -26,18 +27,18 @@ A high-reliability product drop backend system with durable workflows, real-time
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │  Next.js Frontend                          :3005            │
-│  - React components with SSE hooks                          │
-│  - PoW solver, fingerprinting                               │
-│  - Arc'teryx dark theme                                     │
+│  - Drop listing homepage + drop detail pages                │
+│  - Queue + PoW client + SSE hooks                            │
+│  - Proxies /api/* and /events/* to backend services         │
 └─────────────────┬───────────────────────────────────────────┘
                   │
 ┌─────────────────▼───────────────────────────────────────────┐
 │  API Server (Hono)                         :3003            │
 │  - Bot validation middleware                                │
-│  - Routes: /api/drop/*, /api/pow/challenge                  │
+│  - Routes: /api/drop/*, /api/drops/*, /api/pow/challenge    │
 └─────────────────┬───────────────────────────────────────────┘
                   │
 ┌─────────────────▼───────────────────────────────────────────┐
@@ -51,7 +52,7 @@ A high-reliability product drop backend system with durable workflows, real-time
 ┌─────────────────▼───────────────────────────────────────────┐
 │  SSE Server (Hono)                         :3004            │
 │  - /events/:dropId/:userId endpoint                         │
-│  - Real-time drop and user status polling                   │
+│  - /events/drops stream for live active drop listings        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,7 +76,7 @@ That timer survives server restarts — Restate persists it and fires it at the 
 
 ### 2. Real-time Event System (NATS + SSE)
 
-```
+```text
 Restate handlers → publish to NATS → SSE server subscribes → pushes to browser
 ```
 
@@ -92,20 +93,17 @@ return Math.round(prevOffset * (1 - alpha) + newOffset * alpha);
 ### 3. Deterministic Weighted Lottery
 
 ```typescript
-// Expand participants by ticket count into a pool
-for (const [userId, tickets] of entries) {
-  for (let i = 0; i < tickets; i++) {
-    pool.push(userId);
-  }
-}
-// Shuffle with seeded RNG, select unique winners
-const shuffled = seededShuffle(pool, seed);
+// Memory-efficient weighted selection without replacement (no ticket expansion)
+// - Build Fenwick tree over per-user weights
+// - Repeatedly sample a weight-indexed random point using a deterministic seed
+// - Remove winner weight and continue
+const winners = selectWinnersWithMultipliers(entries, seed, winnerCount);
 ```
 
-- **Seeded RNG** (Linear Congruential Generator) ensures reproducibility
-- **Fisher-Yates shuffle** for fair randomization
-- **Weighted selection** where more tickets = more entries in the pool
-- Each user can only win once (deduplication after shuffle)
+- **Provable seed** via commit/reveal, combined with the participant Merkle root
+- **Deterministic RNG** ensures reproducibility for auditors
+- **Weighted selection without replacement** where more tickets = higher win chance, but any user wins at most once
+- **Scales to large drops** because memory is \(O(N)\) participants, not \(O(\text{totalTickets})\)
 
 ### 4. Multi-Layer Bot Mitigation
 
@@ -226,7 +224,7 @@ pnpm dev
 
 You should see:
 
-```
+```text
 ╔══════════════════════════════════════════════════════════╗
 ║           Product Drop Backend Started                   ║
 ╠══════════════════════════════════════════════════════════╣
@@ -262,7 +260,7 @@ curl localhost:8080/Drop/demo-drop-1/initialize \
 cd web && pnpm dev
 ```
 
-Open <http://localhost:3005>
+Open `http://localhost:3005`
 
 ---
 
@@ -382,11 +380,18 @@ curl localhost:9070/invocations/{invocation_id}
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/drop/:id/register` | Register for a drop (requires PoW + fingerprint) |
+| POST | `/api/drop/:id/register` | Register for a drop (requires queue token + bot checks) |
 | GET | `/api/drop/:id/status` | Get current drop status |
 | POST | `/api/drop/:id/lottery` | Trigger lottery manually |
 | POST | `/api/drop/:id/purchase/start` | Start purchase (get token) |
 | POST | `/api/drop/:id/purchase` | Complete purchase |
+| GET | `/api/drop/:id/inclusion-proof/:userId` | Fetch Merkle inclusion proof for independent verification |
+
+### Drops Listing
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/drops/active` | List active drops (used by homepage/SSE snapshot) |
 
 ### Proof of Work
 
@@ -399,12 +404,15 @@ curl localhost:9070/invocations/{invocation_id}
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `http://localhost:3004/events/:dropId/:userId` | SSE connection for real-time updates |
+| GET | `http://localhost:3004/events/drops` | SSE stream of active drops for the homepage |
+
+> In production on Fly.io, the frontend typically connects via same-origin `/events/*` (proxied by Next.js route handlers).
 
 ---
 
 ## Drop Lifecycle
 
-```
+```text
 REGISTRATION → LOTTERY → PURCHASE → COMPLETED
 ```
 
@@ -431,6 +439,13 @@ The system uses a multi-layered approach with weighted scoring:
 
 ## Environment Variables
 
+For local development, copy the templates:
+
+```bash
+cp env.example .env
+cp web/env.example web/.env.local
+```
+
 ```env
 RESTATE_INGRESS_URL=http://localhost:8080
 FINGERPRINT_API_KEY=your_fpjs_secret_key  # Optional for dev
@@ -443,7 +458,7 @@ SSE_PORT=3004
 
 ## Project Structure
 
-```
+```text
 .
 ├── src/
 │   ├── api/              # Hono API server

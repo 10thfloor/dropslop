@@ -46,6 +46,10 @@ function countdownLabel(phase: string): string {
   return "Registration ends in";
 }
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
 function userBadge(
   status: UserStatus,
   tickets?: number
@@ -104,7 +108,7 @@ export function DropCard({
       ? drop.purchaseEnd
       : drop.registrationEnd;
 
-  const countdown = useCountdown(target, clockOffset);
+  const countdown = useCountdown(target || 0, clockOffset);
 
   const totalSeconds = Math.ceil(countdown.total / 1000);
   const isUrgent = totalSeconds > 0 && totalSeconds <= 60;
@@ -116,13 +120,17 @@ export function DropCard({
     .padStart(2, "0")}:${countdown.seconds.toString().padStart(2, "0")}`;
 
   const badge = userStatus ? userBadge(userStatus, userTickets) : null;
+  const invRatio =
+    drop.initialInventory > 0
+      ? clamp(drop.inventory / drop.initialInventory, 0, 1)
+      : 0;
 
   return (
     <Link
       href={`/drop/${drop.dropId}`}
       className={clsx(
         "block rounded-2xl border border-border p-4 transition-colors",
-        "hover:bg-foreground/5"
+        "hover:bg-foreground/5 focus:outline-none focus:ring-2 focus:ring-accent/40"
       )}
     >
       <div className="flex items-start justify-between gap-4">
@@ -130,7 +138,7 @@ export function DropCard({
           <div className="text-xs font-mono text-foreground-muted truncate">
             {drop.dropId}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             <span className="inline-flex items-center rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
               {phaseLabel(drop.phase)}
             </span>
@@ -144,41 +152,90 @@ export function DropCard({
                 {badge.label}
               </span>
             )}
-            <span className="text-foreground-secondary">
-              Inventory:{" "}
-              <span className="text-foreground">
-                {drop.inventory}/{drop.initialInventory}
-              </span>
-            </span>
-            <span className="text-foreground-secondary">
-              Entries:{" "}
-              <span className="text-foreground">
-                {drop.participantCount.toLocaleString()}
-              </span>
-            </span>
-            <span className="text-foreground-secondary">
-              Tickets:{" "}
-              <span className="text-foreground">
-                {drop.totalTickets.toLocaleString()}
-              </span>
-            </span>
           </div>
-        </div>
 
-        <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wider text-foreground-muted">
-            {countdownLabel(drop.phase)}
-          </div>
-          <div
-            className={clsx(
-              "mt-1 text-sm font-semibold tabular-nums",
-              isUrgent ? "text-amber-400" : "text-foreground"
-            )}
-          >
-            {countdown.isExpired ? "Ended" : formatted}
+          <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+            <div className="rounded-xl bg-foreground/5 px-3 py-2">
+              <div className="text-foreground-muted">Inventory</div>
+              <div className="mt-1 font-semibold tabular-nums">
+                {drop.inventory}/{drop.initialInventory}
+              </div>
+              <div className="mt-2 h-1.5 rounded-full bg-foreground/10">
+                <div
+                  className={clsx(
+                    "h-1.5 rounded-full",
+                    invRatio <= 0.1
+                      ? "bg-rose-400"
+                      : invRatio <= 0.3
+                      ? "bg-amber-400"
+                      : "bg-emerald-400"
+                  )}
+                  style={{ width: `${Math.round(invRatio * 100)}%` }}
+                />
+              </div>
+            </div>
+            <div className="rounded-xl bg-foreground/5 px-3 py-2">
+              <div className="text-foreground-muted">Participants</div>
+              <div className="mt-1 font-semibold tabular-nums">
+                {drop.participantCount.toLocaleString()}
+              </div>
+              <div className="mt-1 text-foreground-secondary">
+                Total tickets:{" "}
+                <span className="text-foreground tabular-nums">
+                  {drop.totalTickets.toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-foreground/5 px-3 py-2">
+              <div className="text-foreground-muted">
+                {countdownLabel(drop.phase)}
+              </div>
+              <div
+                className={clsx(
+                  "mt-1 font-semibold tabular-nums",
+                  isUrgent ? "text-amber-400" : "text-foreground"
+                )}
+              >
+                {!target ? "—" : countdown.isExpired ? "Ended" : formatted}
+              </div>
+              {drop.lotteryCommitment && (
+                <div className="mt-1 text-foreground-muted font-mono truncate">
+                  commit: {drop.lotteryCommitment.slice(0, 10)}…
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
     </Link>
+  );
+}
+
+export function DropCardSkeleton() {
+  return (
+    <div className="rounded-2xl border border-border p-4">
+      <div className="h-3 w-28 rounded bg-foreground/10" />
+      <div className="mt-3 flex gap-2">
+        <div className="h-5 w-24 rounded-full bg-foreground/10" />
+        <div className="h-5 w-28 rounded-full bg-foreground/10" />
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-3">
+        <div className="rounded-xl bg-foreground/5 px-3 py-2">
+          <div className="h-3 w-16 rounded bg-foreground/10" />
+          <div className="mt-2 h-4 w-20 rounded bg-foreground/10" />
+          <div className="mt-2 h-1.5 w-full rounded bg-foreground/10" />
+        </div>
+        <div className="rounded-xl bg-foreground/5 px-3 py-2">
+          <div className="h-3 w-20 rounded bg-foreground/10" />
+          <div className="mt-2 h-4 w-24 rounded bg-foreground/10" />
+          <div className="mt-2 h-3 w-28 rounded bg-foreground/10" />
+        </div>
+        <div className="rounded-xl bg-foreground/5 px-3 py-2">
+          <div className="h-3 w-24 rounded bg-foreground/10" />
+          <div className="mt-2 h-4 w-24 rounded bg-foreground/10" />
+          <div className="mt-2 h-3 w-28 rounded bg-foreground/10" />
+        </div>
+      </div>
+    </div>
   );
 }

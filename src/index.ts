@@ -3,6 +3,7 @@
  * Starts API, SSE, and Restate servers
  */
 
+import "./lib/env-loader.js";
 import { serve } from "@hono/node-server";
 import apiApp from "./api/server.js";
 import sseApp from "./sse/server.js";
@@ -22,7 +23,9 @@ initNatsKv()
   })
   .catch((err) => {
     console.error("Failed to initialize NATS KV stores:", err);
-    console.warn("Continuing without distributed state - single instance mode only");
+    console.warn(
+      "Continuing without distributed state - single instance mode only"
+    );
   });
 
 // Start API server
