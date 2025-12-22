@@ -34,8 +34,8 @@
     - **Property 12: Anomaly score bounds**
     - **Validates: Requirements 8.5**
 
-- [ ] 4. Implement Model Serialization
-  - [ ] 4.1 Create `src/lib/ml/model-serializer.ts` with load/save functions
+- [-] 4. Implement Model Serialization
+  - [x] 4.1 Create `src/lib/ml/model-serializer.ts` with load/save functions
     - Implement loadModel with JSON parsing and validation
     - Implement saveModel with JSON serialization
     - Implement validateModelStructure for schema validation
@@ -47,19 +47,19 @@
     - **Property 9: Model structure validation**
     - **Validates: Requirements 6.2**
 
-- [ ] 5. Checkpoint - Ensure all tests pass
+- [x] 5. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 6. Implement ML Service
-  - [ ] 6.1 Create `src/lib/ml/ml-service.ts` with MLService class
+- [-] 6. Implement ML Service
+  - [x] 6.1 Create `src/lib/ml/ml-service.ts` with MLService class
     - Implement initialize() to load model from config path
     - Implement score() with timeout handling and fallback
     - Convert anomaly score to trust component (inverted 0-100)
     - _Requirements: 1.1, 1.2, 1.3, 3.1, 3.2, 3.3, 3.4_
-  - [ ]* 6.2 Write property test for anomaly to trust conversion
+  - [x] 6.2 Write property test for anomaly to trust conversion
     - **Property 1: Anomaly score to trust component conversion**
     - **Validates: Requirements 1.1**
-  - [ ]* 6.3 Write unit tests for ML Service fallback behavior
+  - [x] 6.3 Write unit tests for ML Service fallback behavior
     - Test fallback when model disabled, missing, or inference fails
     - _Requirements: 1.2, 1.3, 3.2, 3.3, 3.4_
 
